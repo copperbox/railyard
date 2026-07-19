@@ -67,6 +67,7 @@ export {
   type EnvSecretsProviderOptions,
   type SecretsProvider,
 } from './secrets/provider.js'
+export { LineSplitter, Redactor, REDACTION_MIN_LENGTH } from './secrets/redactor.js'
 
 // Journal (SPEC §12)
 export { Journal, type JournalEntry, type JournaledEntry } from './journal/journal.js'

@@ -16,6 +16,9 @@ export function docker(
   options: {
     onStdoutLine?: (line: string) => void
     onStderrLine?: (line: string) => void
+    /** Raw, untrimmed chunks — for callers that need to reassemble exact lines. */
+    onStdoutChunk?: (chunk: string) => void
+    onStderrChunk?: (chunk: string) => void
     /**
      * Extra env vars for the docker CLI process itself — how secret values reach
      * value-less `-e NAME` flags without ever appearing on an argv (SPEC §8).
@@ -33,10 +36,12 @@ export function docker(
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString()
       options.onStdoutLine?.(chunk.toString().trimEnd())
+      options.onStdoutChunk?.(chunk.toString())
     })
     child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString()
       options.onStderrLine?.(chunk.toString().trimEnd())
+      options.onStderrChunk?.(chunk.toString())
     })
     child.on('error', (err) =>
       reject(new Error(`failed to run docker (is it installed and on PATH?): ${err.message}`)),

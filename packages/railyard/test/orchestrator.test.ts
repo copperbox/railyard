@@ -538,6 +538,54 @@ describe('safeguards: secrets (SPEC §8)', () => {
   })
 })
 
+describe('safeguards: redaction (SPEC §8)', () => {
+  const fakeSecrets = (values: Record<string, string>) => ({
+    resolve: async (name: string) => values[name],
+  })
+
+  it('redacts secret values in emitted payloads and journal entries, but injects them raw', async () => {
+    const { root, orchestrator, executor } = await setup(
+      {
+        needy: { manifest: 'name: needy\nsecrets: [TOKEN]\non:\n  - type: demo.tick\n' },
+      },
+      { secrets: fakeSecrets({ TOKEN: 'super-sekret-value' }) },
+    )
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1, note: 'leaking super-sekret-value here' })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    // The signal on the bus is scrubbed…
+    expect(executor.calls[0]!.signal.payload).toEqual({
+      n: 1,
+      note: 'leaking [REDACTED:TOKEN] here',
+    })
+    // …while the container env gets the real value (that's the whole point).
+    expect(executor.calls[0]!.env).toEqual({ TOKEN: 'super-sekret-value' })
+    await orchestrator.stop()
+    const journal = await readFile(path.join(root, 'runs', 'journal.jsonl'), 'utf8')
+    expect(journal).not.toContain('super-sekret-value')
+  })
+
+  it('warns loudly (once) about a secret too short to redact, and still boots', async () => {
+    const warnings: string[] = []
+    const { orchestrator, entries } = await setup(
+      {
+        needy: { manifest: 'name: needy\nsecrets: [PIN]\non:\n  - type: demo.tick\n' },
+      },
+      {
+        secrets: fakeSecrets({ PIN: '123' }),
+        logger: { ...silentLogger, warn: (m: string) => warnings.push(m) },
+      },
+    )
+    orchestrator.register(tickerMonitor())
+    await orchestrator.start()
+    expect(warnings.filter((w) => w.includes('"PIN"'))).toHaveLength(1)
+    expect(entries.some((e) => e.event === 'note' && e.message.includes('"PIN"'))).toBe(true)
+    await orchestrator.stop()
+  })
+})
+
 describe('journal and lifecycle', () => {
   it('journals the complete story in order and mirrors it on the emitter', async () => {
     const { root, orchestrator, entries } = await setup({ echo: ECHO })

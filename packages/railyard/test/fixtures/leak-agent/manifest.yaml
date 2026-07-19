@@ -1,0 +1,4 @@
+name: leak-agent
+secrets: [LEAK_SECRET]
+on:
+  - type: demo.tick

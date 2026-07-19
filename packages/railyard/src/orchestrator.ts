@@ -18,6 +18,7 @@ import { consoleLogger, type Logger, type Monitor, type MonitorContext } from '.
 import { DockerExecutor, type AgentExecutor } from './run/executor.js'
 import { makeRunId } from './run/runner.js'
 import { EnvSecretsProvider, type SecretsProvider } from './secrets/provider.js'
+import { Redactor, REDACTION_MIN_LENGTH } from './secrets/redactor.js'
 import { JsonFileKvStore } from './state/kv.js'
 
 export interface OrchestratorConfig {
@@ -72,6 +73,8 @@ export class Orchestrator {
   private readonly runStates = new Map<string, AgentRunState>()
   private readonly maxChainDepth: number
   private readonly secretsProvider: SecretsProvider
+  private readonly redactor = new Redactor()
+  private readonly shortSecretWarned = new Set<string>()
   private agents: LoadedAgent[] = []
   private phase: 'idle' | 'started' | 'stopped' = 'idle'
 
@@ -83,7 +86,8 @@ export class Orchestrator {
       throw new Error(`maxChainDepth must be a positive integer, got ${String(config.maxChainDepth)}`)
     }
     this.stateDir = config.stateDir ?? path.join(path.dirname(path.resolve(config.runsDir)), 'state')
-    this.logger = config.logger ?? consoleLogger('railyard')
+    // Every framework log line passes through the redactor (SPEC §8).
+    this.logger = redactingLogger(config.logger ?? consoleLogger('railyard'), this.redactor)
     this.transport =
       config.transport ??
       new InMemoryTransport({
@@ -164,9 +168,9 @@ export class Orchestrator {
     const unresolvable: string[] = []
     for (const agent of agents) {
       for (const name of agent.manifest.secrets) {
-        if ((await this.secretsProvider.resolve(name)) === undefined) {
-          unresolvable.push(`${name} (agent "${agent.name}")`)
-        }
+        const value = await this.secretsProvider.resolve(name)
+        if (value === undefined) unresolvable.push(`${name} (agent "${agent.name}")`)
+        else this.registerSecret(name, value)
       }
     }
     if (unresolvable.length > 0) {
@@ -248,6 +252,8 @@ export class Orchestrator {
     provenance: ProvenanceEntry[],
     validators: Map<string, ValidateFunction> | null,
   ): void {
+    // Redact before validation and stamping — what validates is what ships (SPEC §8).
+    draft = { type: draft.type, payload: this.redactor.redactJson(draft.payload) }
     const fail = (reason: string): never => {
       this.record({ event: 'signal.dropped', reason, signalType: draft.type, source })
       throw new Error(reason)
@@ -377,12 +383,30 @@ export class Orchestrator {
     for (const name of agent.manifest.secrets) {
       const value = await this.secretsProvider.resolve(name)
       if (value === undefined) missing.push(name)
-      else env[name] = value
+      else {
+        env[name] = value
+        this.registerSecret(name, value)
+      }
     }
     if (missing.length > 0) {
       throw new Error(`agent "${agent.name}": secret(s) unresolvable at spawn: ${missing.join(', ')}`)
     }
     return env
+  }
+
+  /**
+   * Feed a resolved value into the redactor. A value too short to redact
+   * safely gets a loud (once per name) warning — tunable, never silent.
+   */
+  private registerSecret(name: string, value: string): void {
+    if (!this.redactor.register(name, value) && !this.shortSecretWarned.has(name)) {
+      this.shortSecretWarned.add(name)
+      const message =
+        `secret "${name}" is shorter than ${REDACTION_MIN_LENGTH} characters and cannot be ` +
+        `safely redacted — its value may appear in logs and records`
+      this.logger.warn(message)
+      this.record({ event: 'note', message })
+    }
   }
 
   private runStateFor(agentName: string): AgentRunState {
@@ -414,6 +438,7 @@ export class Orchestrator {
           runId,
           timeoutSeconds: agent.manifest.timeout,
           env,
+          redactor: this.redactor,
           onEvent: (line) => {
             if (line.kind === 'signal') {
               try {
@@ -469,10 +494,23 @@ export class Orchestrator {
     this.inFlight.add(run)
   }
 
-  /** Journal an entry and mirror it on the in-process emitter (SPEC §12). */
+  /**
+   * Journal an entry and mirror it on the in-process emitter (SPEC §12).
+   * Entries are redacted first — both the disk line and what listeners see.
+   */
   private record(entry: Parameters<Journal['append']>[0]): void {
-    const stamped = this.journal.append(entry)
-    this.emitter.emit(entry.event, stamped)
+    const redacted = this.redactor.redactJson(entry)
+    const stamped = this.journal.append(redacted)
+    this.emitter.emit(redacted.event, stamped)
+  }
+}
+
+function redactingLogger(base: Logger, redactor: Redactor): Logger {
+  return {
+    debug: (m) => base.debug(redactor.redactString(m)),
+    info: (m) => base.info(redactor.redactString(m)),
+    warn: (m) => base.warn(redactor.redactString(m)),
+    error: (m) => base.error(redactor.redactString(m)),
   }
 }
 

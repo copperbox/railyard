@@ -8,6 +8,7 @@ import type { EventsLine } from '../src/contracts/types.js'
 import { dockerDaemonAvailable, ensureAgentImage } from '../src/docker/build.js'
 import { docker, dockerOk } from '../src/docker/cli.js'
 import { runAgent, sweepOrphanContainers } from '../src/run/runner.js'
+import { Redactor } from '../src/secrets/redactor.js'
 
 const DOCKER = process.env.RAILYARD_DOCKER_TESTS === '1'
 const FIXTURE = path.join(import.meta.dirname, 'fixtures/agents/echo-agent')
@@ -170,6 +171,42 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     })
     expect(withoutSecret.status).toBe('failed')
     expect(withoutSecret.exitCode).toBe(9)
+  })
+
+  it('scrubs a leaked secret from every framework-written run artifact (SPEC §8)', async () => {
+    const SECRET = 'leak-me-if-you-can-9000'
+    const leakAgent = await loadAgentFolder(path.join(import.meta.dirname, 'fixtures/leak-agent'))
+    const leakImage = await ensureAgentImage(leakAgent)
+    const redactor = new Redactor()
+    expect(redactor.register('LEAK_SECRET', SECRET)).toBe(true)
+
+    const record = await runAgent({
+      agent: leakAgent,
+      imageRef: leakImage,
+      signal: tickSignal({ n: 1 }),
+      runsDir,
+      env: { LEAK_SECRET: SECRET },
+      redactor,
+      onEvent: () => {},
+    })
+    expect(record.status).toBe('succeeded')
+    expect(record.result).toEqual({ stolen: '[REDACTED:LEAK_SECRET]' })
+
+    const runDir = path.join(runsDir, record.runId)
+    const artifacts = [
+      'invocation.json',
+      'agent.log',
+      'events.jsonl',
+      'result.json',
+      'output/result.json',
+    ]
+    for (const file of artifacts) {
+      const content = await readFile(path.join(runDir, file), 'utf8')
+      expect(content, file).not.toContain(SECRET)
+    }
+    const log = await readFile(path.join(runDir, 'agent.log'), 'utf8')
+    expect(log).toContain('the secret is [REDACTED:LEAK_SECRET]')
+    expect(log).toContain('split across chunks maybe: [REDACTED:LEAK_SECRET] (no trailing newline)')
   })
 
   it('sweeps orphaned containers labeled with this runs root', async () => {

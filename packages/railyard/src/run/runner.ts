@@ -1,10 +1,11 @@
 import { createWriteStream } from 'node:fs'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { LoadedAgent } from '../agents/loader.js'
 import { newRunId } from '../contracts/id.js'
 import type { EventsLine, SignalEnvelope } from '../contracts/types.js'
 import { docker, dockerOk } from '../docker/cli.js'
+import { LineSplitter, type Redactor } from '../secrets/redactor.js'
 import { EventsTailer } from './events-tailer.js'
 
 /** Paths inside the container; exposed to the agent via env vars (SPEC §5). */
@@ -54,6 +55,13 @@ export interface RunAgentParams {
    * values never appear on a command line.
    */
   env?: Record<string, string>
+  /**
+   * Redaction guarantee (SPEC §8): applied to agent.log lines as they are
+   * captured, to invocation.json / result.json at serialization, and as a
+   * post-run rewrite of the preserved events.jsonl and the agent's own
+   * output/result.json. Other agent-written output files are NOT rewritten.
+   */
+  redactor?: Redactor
   /** Valid events-file lines, dispatched while the container is still running. */
   onEvent: (line: EventsLine) => void
   onMalformedEvent?: (raw: string, reason: string) => void
@@ -86,9 +94,15 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
   // Non-root container users must still be able to write their side of the contract.
   await chmod(outputDir, 0o777)
   await chmod(eventsFile, 0o666)
+  const redactor = params.redactor
+  const redactJson = <T,>(value: T): T => (redactor ? redactor.redactJson(value) : value)
   await writeFile(
     path.join(runDir, 'invocation.json'),
-    JSON.stringify({ runId, agent: agent.name, agentDir: agent.dir, imageRef, signal }, null, 2),
+    JSON.stringify(
+      redactJson({ runId, agent: agent.name, agentDir: agent.dir, imageRef, signal }),
+      null,
+      2,
+    ),
   )
 
   const createArgs = [
@@ -113,6 +127,14 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     onMalformed: params.onMalformedEvent ?? (() => {}),
   })
   const logStream = createWriteStream(path.join(runDir, 'agent.log'))
+  // Line-buffered so redaction always sees whole lines — a secret split across
+  // stream chunks must not slip through (SPEC §8).
+  const splitters = { stdout: new LineSplitter(), stderr: new LineSplitter() }
+  const writeLogChunk = (which: 'stdout' | 'stderr', chunk: string): void => {
+    for (const line of splitters[which].push(chunk)) {
+      logStream.write((redactor ? redactor.redactString(line) : line) + '\n')
+    }
+  }
   const timeoutSeconds = params.timeoutSeconds === undefined ? 900 : params.timeoutSeconds
   const startedAt = new Date()
   let exitCode: number | null = null
@@ -139,8 +161,8 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     // `docker logs --follow` replays from the beginning, so nothing between
     // start and attach is lost; it ends when the container exits.
     const logsDone = docker(['logs', '--follow', containerName], {
-      onStdoutLine: (line) => logStream.write(line + '\n'),
-      onStderrLine: (line) => logStream.write(line + '\n'),
+      onStdoutChunk: (chunk) => writeLogChunk('stdout', chunk),
+      onStderrChunk: (chunk) => writeLogChunk('stderr', chunk),
     })
     const waited = await dockerOk(['wait', containerName], `run ${runId}`)
     exitCode = Number.parseInt(waited.stdout.trim(), 10)
@@ -151,6 +173,10 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     // If the timer already fired, learn whether it actually killed before we record.
     await killDone?.catch(() => {})
     await tailer.stop().catch(() => {})
+    for (const splitter of [splitters.stdout, splitters.stderr]) {
+      const rest = splitter.flush()
+      if (rest !== null) logStream.write((redactor ? redactor.redactString(rest) : rest) + '\n')
+    }
     logStream.end()
     // Guaranteed teardown (SPEC §6): remove the container on every path.
     await docker(['rm', '-f', containerName])
@@ -169,6 +195,13 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     }
   }
 
+  if (redactor) {
+    // The agent wrote these two directly; scrub them now that the run is over.
+    // Arbitrary other output files are the agent's own business (documented).
+    await rewriteRedacted(eventsFile, redactor)
+    await rewriteRedacted(path.join(outputDir, 'result.json'), redactor)
+  }
+
   const record: RunRecord = {
     runId,
     agent: agent.name,
@@ -179,12 +212,31 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     durationMs: finishedAt.getTime() - startedAt.getTime(),
     exitCode,
     status: exitCode === 0 ? 'succeeded' : 'failed',
-    result,
+    result: redactJson(result),
     resultError,
     killReason,
   }
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(record, null, 2))
   return record
+}
+
+/**
+ * Rewrite a text file through the redactor; a missing file is fine. Replaces
+ * via write-temp-then-rename: container-written files are often root-owned and
+ * not writable in place, but the run dir itself is ours.
+ */
+async function rewriteRedacted(filePath: string, redactor: Redactor): Promise<void> {
+  let raw: string
+  try {
+    raw = await readFile(filePath, 'utf8')
+  } catch {
+    return
+  }
+  const redacted = redactor.redactString(raw)
+  if (redacted === raw) return
+  const tmp = `${filePath}.redacting`
+  await writeFile(tmp, redacted)
+  await rename(tmp, filePath)
 }
 
 /**
