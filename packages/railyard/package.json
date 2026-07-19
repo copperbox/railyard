@@ -1,0 +1,45 @@
+{
+  "name": "@copperbox/railyard",
+  "version": "0.0.0",
+  "description": "Pub/sub-style, multi-provider AI agent orchestration: monitors emit signals, agents run as ephemeral Docker containers.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/copperbox/railyard.git",
+    "directory": "packages/railyard"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schemas/*": "./schemas/*"
+  },
+  "files": [
+    "dist",
+    "schemas"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:docker": "cross-env RAILYARD_DOCKER_TESTS=1 vitest run"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "jsonpath-plus": "^10.3.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "cross-env": "^10.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

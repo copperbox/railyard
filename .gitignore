@@ -2,3 +2,7 @@
 .mcp.json
 AGENTS.md
 CLAUDE.md
+node_modules/
+dist/
+runs/
+*.tsbuildinfo
