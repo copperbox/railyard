@@ -83,6 +83,7 @@ async function setup(
     'signal.dropped',
     'run.started',
     'run.finished',
+    'run.queued',
     'run.skipped',
     'note',
   ] as const
@@ -352,6 +353,112 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
           logger: silentLogger,
         }),
     ).toThrow(/maxChainDepth/)
+  })
+})
+
+describe('safeguards: per-agent concurrency cap + queue (SPEC §6)', () => {
+  /** Executor whose runs block until released one by one, in call order. */
+  function gate(executor: FakeExecutor) {
+    const releases: Array<() => void> = []
+    executor.behavior = () =>
+      new Promise<Partial<RunRecord>>((resolve) => {
+        releases.push(() => resolve({}))
+      })
+    return {
+      release: () => releases.shift()?.(),
+      pending: () => releases.length,
+    }
+  }
+
+  it('default cap 1 serializes runs: the second matched signal queues, journaled', async () => {
+    const { orchestrator, executor, entries } = await setup({ echo: ECHO })
+    const gated = gate(executor)
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    monitor.emit({ n: 2 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    expect(entries.find((e) => e.event === 'run.queued')).toMatchObject({
+      agent: 'echo',
+      queueDepth: 1,
+    })
+    gated.release()
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
+    expect(executor.calls.map((c) => c.signal.payload)).toEqual([{ n: 1 }, { n: 2 }])
+    gated.release()
+    await orchestrator.stop()
+  })
+
+  it('concurrency: 2 runs two signals simultaneously', async () => {
+    const { orchestrator, executor, entries } = await setup({
+      wide: { manifest: 'name: wide\nconcurrency: 2\non:\n  - type: demo.tick\n' },
+    })
+    const gated = gate(executor)
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    monitor.emit({ n: 2 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
+    expect(entries.some((e) => e.event === 'run.queued')).toBe(false)
+    gated.release()
+    gated.release()
+    await orchestrator.stop()
+  })
+
+  it('drains the queue in FIFO order across several signals', async () => {
+    const { orchestrator, executor } = await setup({ echo: ECHO })
+    const gated = gate(executor)
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    for (const n of [1, 2, 3]) monitor.emit({ n })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    gated.release()
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
+    gated.release()
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(3))
+    expect(executor.calls.map((c) => c.signal.payload)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }])
+    gated.release()
+    await orchestrator.stop()
+  })
+
+  it('stop() drops queued entries with a journal line each, but drains the in-flight run', async () => {
+    const { orchestrator, executor, entries } = await setup({ echo: ECHO })
+    const gated = gate(executor)
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    monitor.emit({ n: 2 })
+    monitor.emit({ n: 3 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    const stopping = orchestrator.stop()
+    setTimeout(() => gated.release(), 20)
+    await stopping
+    expect(executor.calls).toHaveLength(1)
+    const skipped = entries.filter((e) => e.event === 'run.skipped')
+    expect(skipped).toHaveLength(2)
+    expect(skipped.every((e) => (e as { reason: string }).reason === 'shutdown')).toBe(true)
+    expect(entries.filter((e) => e.event === 'run.finished')).toHaveLength(1)
+  })
+
+  it('a failed run still releases its slot for the queued signal', async () => {
+    const { orchestrator, executor, entries } = await setup({ echo: ECHO })
+    executor.behavior = () => {
+      throw new Error('boom')
+    }
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    monitor.emit({ n: 2 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
+    await vi.waitFor(() =>
+      expect(entries.filter((e) => e.event === 'run.finished')).toHaveLength(2),
+    )
+    await orchestrator.stop()
   })
 })
 

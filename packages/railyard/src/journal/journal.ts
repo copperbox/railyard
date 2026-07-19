@@ -25,6 +25,14 @@ export type JournalEntry =
       error?: string
     }
   | {
+      /** A matched signal waiting because its agent is at the concurrency cap (SPEC §6). */
+      event: 'run.queued'
+      agent: string
+      signalId: string
+      signalType: string
+      queueDepth: number
+    }
+  | {
       /** A matched signal that will never run (SPEC §7 self-trigger refusal; queue drop at stop()). */
       event: 'run.skipped'
       agent: string

@@ -43,6 +43,12 @@ interface RegisteredMonitor {
   validators: Map<string, ValidateFunction>
 }
 
+/** Live run bookkeeping for one agent: active count vs its cap, plus the FIFO queue. */
+interface AgentRunState {
+  active: number
+  queue: SignalEnvelope[]
+}
+
 /**
  * The single in-process layer (SPEC §1): validates, routes, spawns, journals.
  * Boot is fail-fast — by the time start() resolves the system is fully
@@ -60,6 +66,7 @@ export class Orchestrator {
   private readonly monitors: RegisteredMonitor[] = []
   private readonly imageRefs = new Map<string, string>()
   private readonly inFlight = new Set<Promise<unknown>>()
+  private readonly runStates = new Map<string, AgentRunState>()
   private readonly maxChainDepth: number
   private agents: LoadedAgent[] = []
   private phase: 'idle' | 'started' | 'stopped' = 'idle'
@@ -168,7 +175,10 @@ export class Orchestrator {
     )
   }
 
-  /** Stop monitors, drain in-flight runs, stop the transport. */
+  /**
+   * Stop monitors, drop queued (not yet started) runs with a journal entry each
+   * (invariant 10), drain in-flight runs, stop the transport.
+   */
   async stop(): Promise<void> {
     if (this.phase !== 'started') return
     this.phase = 'stopped'
@@ -176,6 +186,17 @@ export class Orchestrator {
       await monitor.stop().catch((err: unknown) => {
         this.logger.error(`monitor "${monitor.name}" failed to stop: ${String(err)}`)
       })
+    }
+    for (const [agentName, state] of this.runStates) {
+      for (const queued of state.queue.splice(0)) {
+        this.record({
+          event: 'run.skipped',
+          agent: agentName,
+          signalId: queued.id,
+          signalType: queued.type,
+          reason: 'shutdown',
+        })
+      }
     }
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight])
@@ -295,8 +316,48 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Per-agent concurrency cap + in-memory FIFO queue (SPEC §6). Excess matched
+   * signals queue; a settling run launches the next. During shutdown nothing
+   * new starts — matched signals are journaled as skipped instead.
+   */
   private dispatch(agent: LoadedAgent, signal: SignalEnvelope): void {
-    // M1's per-agent concurrency cap and queue slot in here.
+    if (this.phase === 'stopped') {
+      this.record({
+        event: 'run.skipped',
+        agent: agent.name,
+        signalId: signal.id,
+        signalType: signal.type,
+        reason: 'shutdown',
+      })
+      return
+    }
+    const state = this.runStateFor(agent.name)
+    if (state.active >= agent.manifest.concurrency) {
+      state.queue.push(signal)
+      this.record({
+        event: 'run.queued',
+        agent: agent.name,
+        signalId: signal.id,
+        signalType: signal.type,
+        queueDepth: state.queue.length,
+      })
+      return
+    }
+    this.launch(agent, signal, state)
+  }
+
+  private runStateFor(agentName: string): AgentRunState {
+    let state = this.runStates.get(agentName)
+    if (!state) {
+      state = { active: 0, queue: [] }
+      this.runStates.set(agentName, state)
+    }
+    return state
+  }
+
+  private launch(agent: LoadedAgent, signal: SignalEnvelope, state: AgentRunState): void {
+    state.active += 1
     const runId = makeRunId(agent.name)
     this.record({ event: 'run.started', runId, agent: agent.name, signalId: signal.id })
     const childProvenance: ProvenanceEntry[] = [
@@ -353,7 +414,15 @@ export class Orchestrator {
           error: String((err as Error).message ?? err),
         })
       })
-      .finally(() => this.inFlight.delete(run))
+      .finally(() => {
+        this.inFlight.delete(run)
+        state.active -= 1
+        // Queued entries left at shutdown are journaled by stop(), not shifted here.
+        if (this.phase !== 'stopped') {
+          const next = state.queue.shift()
+          if (next) this.launch(agent, next, state)
+        }
+      })
     this.inFlight.add(run)
   }
 
