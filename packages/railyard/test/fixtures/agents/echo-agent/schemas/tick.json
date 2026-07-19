@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["n"],
+  "properties": {
+    "n": { "type": "number" },
+    "sleep": { "type": "number" },
+    "fail": { "type": "boolean" }
+  }
+}
