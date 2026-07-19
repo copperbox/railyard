@@ -16,6 +16,7 @@ import { compilePayloadSchema, formatAjvErrors } from './contracts/validate.js'
 import { Journal, type JournaledEntry } from './journal/journal.js'
 import { consoleLogger, type Logger, type Monitor, type MonitorContext } from './monitor/monitor.js'
 import { DockerExecutor, type AgentExecutor } from './run/executor.js'
+import { sweepRetention, type RetentionPolicy } from './run/retention.js'
 import { makeRunId } from './run/runner.js'
 import { EnvSecretsProvider, type SecretsProvider } from './secrets/provider.js'
 import { Redactor, REDACTION_MIN_LENGTH } from './secrets/redactor.js'
@@ -39,6 +40,11 @@ export interface OrchestratorConfig {
   maxChainDepth?: number
   /** Secret resolution seam (SPEC §8); defaults to process env + `.env`. */
   secrets?: SecretsProvider
+  /**
+   * Run-dir pruning (SPEC §12); whichever rule prunes more wins. Unset =
+   * unlimited, with a loud startup warning. journal.jsonl is always exempt.
+   */
+  retention?: RetentionPolicy
   logger?: Logger
 }
 
@@ -75,6 +81,8 @@ export class Orchestrator {
   private readonly secretsProvider: SecretsProvider
   private readonly redactor = new Redactor()
   private readonly shortSecretWarned = new Set<string>()
+  private readonly retention: RetentionPolicy
+  private readonly activeRuns = new Set<string>()
   private agents: LoadedAgent[] = []
   private phase: 'idle' | 'started' | 'stopped' = 'idle'
 
@@ -84,6 +92,18 @@ export class Orchestrator {
     this.maxChainDepth = config.maxChainDepth ?? 5
     if (!Number.isInteger(this.maxChainDepth) || this.maxChainDepth < 1) {
       throw new Error(`maxChainDepth must be a positive integer, got ${String(config.maxChainDepth)}`)
+    }
+    this.retention = config.retention ?? {}
+    if (this.retention.maxAgeDays !== undefined && !(this.retention.maxAgeDays > 0)) {
+      throw new Error(`retention.maxAgeDays must be positive, got ${String(this.retention.maxAgeDays)}`)
+    }
+    if (
+      this.retention.maxRunsPerAgent !== undefined &&
+      (!Number.isInteger(this.retention.maxRunsPerAgent) || this.retention.maxRunsPerAgent < 1)
+    ) {
+      throw new Error(
+        `retention.maxRunsPerAgent must be a positive integer, got ${String(this.retention.maxRunsPerAgent)}`,
+      )
     }
     this.stateDir = config.stateDir ?? path.join(path.dirname(path.resolve(config.runsDir)), 'state')
     // Every framework log line passes through the redactor (SPEC §8).
@@ -141,6 +161,17 @@ export class Orchestrator {
     })
     if (swept.length > 0) {
       this.record({ event: 'note', message: `boot sweep removed ${swept.length} orphaned container(s)` })
+    }
+
+    // Retention (SPEC §12): sweep at boot; warn loudly when unlimited.
+    if (this.retention.maxAgeDays === undefined && this.retention.maxRunsPerAgent === undefined) {
+      const message =
+        'retention is unset: run directories will accumulate without bound ' +
+        '(set retention.maxAgeDays and/or retention.maxRunsPerAgent to prune; journal.jsonl is always kept)'
+      this.logger.warn(message)
+      this.record({ event: 'note', message })
+    } else {
+      await this.runRetentionSweep()
     }
 
     // 1. Load and validate agent manifests.
@@ -418,9 +449,20 @@ export class Orchestrator {
     return state
   }
 
+  /** Sweep run dirs per the retention policy; runs at boot and after each run — no timers. */
+  private async runRetentionSweep(): Promise<void> {
+    const removed = await sweepRetention({
+      runsDir: this.runsDir,
+      policy: this.retention,
+      activeRunIds: this.activeRuns,
+    })
+    if (removed.length > 0) this.record({ event: 'retention.swept', removed })
+  }
+
   private launch(agent: LoadedAgent, signal: SignalEnvelope, state: AgentRunState): void {
     state.active += 1
     const runId = makeRunId(agent.name)
+    this.activeRuns.add(runId)
     this.record({ event: 'run.started', runId, agent: agent.name, signalId: signal.id })
     const childProvenance: ProvenanceEntry[] = [
       ...signal.provenance,
@@ -482,8 +524,17 @@ export class Orchestrator {
           error: String((err as Error).message ?? err),
         })
       })
+      .then(() => {
+        // After-each-run retention sweep (SPEC §12), inside the tracked run
+        // promise so stop() waits for it. Never fatal to the run's bookkeeping.
+        this.activeRuns.delete(runId)
+        return this.runRetentionSweep().catch((err: unknown) => {
+          this.logger.warn(`retention sweep failed: ${String(err)}`)
+        })
+      })
       .finally(() => {
         this.inFlight.delete(run)
+        this.activeRuns.delete(runId)
         state.active -= 1
         // Queued entries left at shutdown are journaled by stop(), not shifted here.
         if (this.phase !== 'stopped') {

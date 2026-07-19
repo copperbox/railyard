@@ -48,6 +48,13 @@ export {
 export { dockerDaemonAvailable, ensureAgentImage, type EnsureImageOptions } from './docker/build.js'
 export { hashAgentFolder, imageTagFor } from './docker/hash.js'
 
+// Retention (SPEC §12)
+export {
+  sweepRetention,
+  type RetentionPolicy,
+  type RetentionSweepOptions,
+} from './run/retention.js'
+
 // Execution (SPEC §5, §6)
 export { DockerExecutor, type AgentExecutor } from './run/executor.js'
 export {

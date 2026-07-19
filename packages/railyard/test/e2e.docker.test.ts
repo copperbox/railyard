@@ -59,7 +59,8 @@ describe.skipIf(!DOCKER)('docker: end-to-end walking skeleton (SPEC §15 M0)', (
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const events = journal.map((e) => e.event)
+    // Boot notes (e.g. the retention-unset warning) may precede the run story.
+    const events = journal.map((e) => e.event).filter((e) => e !== 'note')
     expect(events.slice(0, 2)).toEqual(['signal.received', 'run.started'])
     expect(events).toContain('run.finished')
 

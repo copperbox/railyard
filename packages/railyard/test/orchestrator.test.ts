@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -85,6 +85,7 @@ async function setup(
     'run.finished',
     'run.queued',
     'run.skipped',
+    'retention.swept',
     'note',
   ] as const
   for (const event of events) {
@@ -586,6 +587,87 @@ describe('safeguards: redaction (SPEC §8)', () => {
   })
 })
 
+describe('safeguards: retention (SPEC §12)', () => {
+  it('warns loudly at startup when retention is unset, and journals the note', async () => {
+    const warnings: string[] = []
+    const { orchestrator, entries } = await setup(
+      { echo: ECHO },
+      { logger: { ...silentLogger, warn: (m: string) => warnings.push(m) } },
+    )
+    orchestrator.register(tickerMonitor())
+    await orchestrator.start()
+    expect(warnings.some((w) => w.includes('retention is unset'))).toBe(true)
+    expect(
+      entries.some((e) => e.event === 'note' && e.message.includes('retention is unset')),
+    ).toBe(true)
+    await orchestrator.stop()
+  })
+
+  it('sweeps at boot and after each run, journaling what was pruned', async () => {
+    const { root, orchestrator, entries } = await setup(
+      { echo: ECHO },
+      { retention: { maxRunsPerAgent: 2 } },
+    )
+    const runsDir = path.join(root, 'runs')
+    // Fabricate three stale run dirs for this agent; cap 2 → boot prunes one.
+    const stale: string[] = []
+    for (const [i, hour] of ['01', '02', '03'].entries()) {
+      const id = `2026-07-19T${hour}-00-00.000Z--echo--aaaaaaa${i}`
+      await mkdir(path.join(runsDir, id), { recursive: true })
+      stale.push(id)
+    }
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    const bootSwept = entries.find((e) => e.event === 'retention.swept')
+    expect(bootSwept).toMatchObject({ removed: [stale[0]] })
+
+    // A finished run triggers another sweep; the two remaining dirs are within
+    // the cap, so it must prune nothing further.
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() =>
+      expect(entries.filter((e) => e.event === 'run.finished')).toHaveLength(1),
+    )
+    await orchestrator.stop()
+    // No new prune expected (2 dirs ≤ cap 2), but the boot prune must be the
+    // only retention.swept — proving sweeps don't over-delete.
+    expect(entries.filter((e) => e.event === 'retention.swept')).toHaveLength(1)
+    const left = await readdir(runsDir)
+    expect(left).toContain(stale[1]!)
+    expect(left).toContain(stale[2]!)
+    expect(left).toContain('journal.jsonl')
+  })
+
+  it('after-run sweep prunes dirs that fell out of policy during the run', async () => {
+    const { root, orchestrator, executor, entries } = await setup(
+      { echo: ECHO },
+      { retention: { maxRunsPerAgent: 1 } },
+    )
+    const runsDir = path.join(root, 'runs')
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    // Appears mid-flight (after boot), pruned only by the after-run sweep.
+    const stale = ['2026-07-19T01-00-00.000Z--echo--aaaaaaaa', '2026-07-19T02-00-00.000Z--echo--bbbbbbbb']
+    for (const id of stale) await mkdir(path.join(runsDir, id), { recursive: true })
+    executor.behavior = () => ({})
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => expect(entries.some((e) => e.event === 'retention.swept')).toBe(true))
+    const swept = entries.find((e) => e.event === 'retention.swept')!
+    expect((swept as { removed: string[] }).removed).toEqual([stale[0]])
+    await orchestrator.stop()
+  })
+
+  it('rejects invalid retention config at construction', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'railyard-orch-'))
+    const base = { agentsDir: path.join(root, 'agents'), runsDir: path.join(root, 'runs') }
+    expect(() => new Orchestrator({ ...base, retention: { maxAgeDays: -1 } })).toThrow(/maxAgeDays/)
+    expect(() => new Orchestrator({ ...base, retention: { maxRunsPerAgent: 0 } })).toThrow(
+      /maxRunsPerAgent/,
+    )
+  })
+})
+
 describe('journal and lifecycle', () => {
   it('journals the complete story in order and mirrors it on the emitter', async () => {
     const { root, orchestrator, entries } = await setup({ echo: ECHO })
@@ -593,17 +675,21 @@ describe('journal and lifecycle', () => {
     orchestrator.register(monitor)
     await orchestrator.start()
     monitor.emit({ n: 1 })
+    // The retention-unset boot warning is journaled as a note (SPEC §12); the
+    // run story follows it in order.
+    const story = (list: Array<{ event: string }>) =>
+      list.map((e) => e.event).filter((e) => e !== 'note')
     await vi.waitFor(() =>
-      expect(entries.map((e) => e.event)).toEqual(['signal.received', 'run.started', 'run.finished']),
+      expect(story(entries)).toEqual(['signal.received', 'run.started', 'run.finished']),
     )
     await orchestrator.stop()
 
     const journal = (await readFile(path.join(root, 'runs', 'journal.jsonl'), 'utf8'))
       .trim()
       .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(journal.map((e) => e.event)).toEqual(['signal.received', 'run.started', 'run.finished'])
-    expect(journal[2].status).toBe('succeeded')
+      .map((line) => JSON.parse(line) as { event: string; status?: string })
+    expect(story(journal)).toEqual(['signal.received', 'run.started', 'run.finished'])
+    expect(journal.find((e) => e.event === 'run.finished')?.status).toBe('succeeded')
   })
 
   it('journals an executor crash as run.finished status error, never silently', async () => {

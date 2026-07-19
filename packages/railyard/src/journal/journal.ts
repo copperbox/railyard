@@ -42,6 +42,11 @@ export type JournalEntry =
       signalType: string
       reason: 'self-trigger' | 'shutdown'
     }
+  | {
+      /** A retention sweep pruned run directories (SPEC §12); silent sweeps are not journaled. */
+      event: 'retention.swept'
+      removed: string[]
+    }
   | { event: 'note'; message: string }
 
 export type JournaledEntry = JournalEntry & { at: string }
