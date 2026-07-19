@@ -1,0 +1,4 @@
+name: secret-check-agent
+secrets: [MY_SECRET]
+on:
+  - type: demo.tick

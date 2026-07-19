@@ -17,6 +17,7 @@ import { Journal, type JournaledEntry } from './journal/journal.js'
 import { consoleLogger, type Logger, type Monitor, type MonitorContext } from './monitor/monitor.js'
 import { DockerExecutor, type AgentExecutor } from './run/executor.js'
 import { makeRunId } from './run/runner.js'
+import { EnvSecretsProvider, type SecretsProvider } from './secrets/provider.js'
 import { JsonFileKvStore } from './state/kv.js'
 
 export interface OrchestratorConfig {
@@ -35,6 +36,8 @@ export interface OrchestratorConfig {
    * journaled. Default 5.
    */
   maxChainDepth?: number
+  /** Secret resolution seam (SPEC §8); defaults to process env + `.env`. */
+  secrets?: SecretsProvider
   logger?: Logger
 }
 
@@ -68,6 +71,7 @@ export class Orchestrator {
   private readonly inFlight = new Set<Promise<unknown>>()
   private readonly runStates = new Map<string, AgentRunState>()
   private readonly maxChainDepth: number
+  private readonly secretsProvider: SecretsProvider
   private agents: LoadedAgent[] = []
   private phase: 'idle' | 'started' | 'stopped' = 'idle'
 
@@ -86,6 +90,7 @@ export class Orchestrator {
         onHandlerError: (err) => this.logger.error(`subscriber error: ${String(err)}`),
       })
     this.executor = config.executor ?? new DockerExecutor()
+    this.secretsProvider = config.secrets ?? new EnvSecretsProvider()
     this.journal = new Journal(config.runsDir)
   }
 
@@ -121,7 +126,7 @@ export class Orchestrator {
     return this
   }
 
-  /** Boot sequence per SPEC §10. (Secrets resolution slots in as step 3 in M1.) */
+  /** Boot sequence per SPEC §10. */
   async start(): Promise<void> {
     if (this.phase !== 'idle') throw new Error('start() may only be called once')
     await this.journal.init()
@@ -153,6 +158,19 @@ export class Orchestrator {
     for (const note of report.unchecked) {
       this.logger.warn(note)
       this.record({ event: 'note', message: note })
+    }
+
+    // 3. Resolve every declared secret — declared-but-unresolvable fails boot (SPEC §8).
+    const unresolvable: string[] = []
+    for (const agent of agents) {
+      for (const name of agent.manifest.secrets) {
+        if ((await this.secretsProvider.resolve(name)) === undefined) {
+          unresolvable.push(`${name} (agent "${agent.name}")`)
+        }
+      }
+    }
+    if (unresolvable.length > 0) {
+      throw new Error(`unresolvable secret(s):\n- ${[...new Set(unresolvable)].join('\n- ')}`)
     }
 
     // 4. Build/pull every agent image.
@@ -347,6 +365,26 @@ export class Orchestrator {
     this.launch(agent, signal, state)
   }
 
+  /**
+   * Resolve the agent's declared secrets for one spawn (SPEC §8): fresh values
+   * every time so rotation works without a restart. Only declared names are
+   * injected — least privilege by construction. A name that has become
+   * unresolvable since boot fails the run (journaled via the launch chain).
+   */
+  private async resolveSecretsFor(agent: LoadedAgent): Promise<Record<string, string>> {
+    const env: Record<string, string> = {}
+    const missing: string[] = []
+    for (const name of agent.manifest.secrets) {
+      const value = await this.secretsProvider.resolve(name)
+      if (value === undefined) missing.push(name)
+      else env[name] = value
+    }
+    if (missing.length > 0) {
+      throw new Error(`agent "${agent.name}": secret(s) unresolvable at spawn: ${missing.join(', ')}`)
+    }
+    return env
+  }
+
   private runStateFor(agentName: string): AgentRunState {
     let state = this.runStates.get(agentName)
     if (!state) {
@@ -366,32 +404,35 @@ export class Orchestrator {
     ]
     const agentSource: SignalSource = { kind: 'agent', name: agent.name }
 
-    const run = this.executor
-      .execute({
-        agent,
-        imageRef: this.imageRefs.get(agent.name)!,
-        signal,
-        runsDir: this.runsDir,
-        runId,
-        timeoutSeconds: agent.manifest.timeout,
-        onEvent: (line) => {
-          if (line.kind === 'signal') {
-            try {
-              this.emitSignal(agentSource, { type: line.type, payload: line.payload }, childProvenance, null)
-            } catch {
-              // Already journaled as signal.dropped; must not kill the tailer.
+    const run = this.resolveSecretsFor(agent)
+      .then((env) =>
+        this.executor.execute({
+          agent,
+          imageRef: this.imageRefs.get(agent.name)!,
+          signal,
+          runsDir: this.runsDir,
+          runId,
+          timeoutSeconds: agent.manifest.timeout,
+          env,
+          onEvent: (line) => {
+            if (line.kind === 'signal') {
+              try {
+                this.emitSignal(agentSource, { type: line.type, payload: line.payload }, childProvenance, null)
+              } catch {
+                // Already journaled as signal.dropped; must not kill the tailer.
+              }
+            } else {
+              childLogger(this.logger, agent.name)[line.level ?? 'info'](line.message)
             }
-          } else {
-            childLogger(this.logger, agent.name)[line.level ?? 'info'](line.message)
-          }
-        },
-        onMalformedEvent: (raw, reason) => {
-          this.record({
-            event: 'note',
-            message: `run ${runId}: malformed events line (${reason}): ${raw.slice(0, 200)}`,
-          })
-        },
-      })
+          },
+          onMalformedEvent: (raw, reason) => {
+            this.record({
+              event: 'note',
+              message: `run ${runId}: malformed events line (${reason}): ${raw.slice(0, 200)}`,
+            })
+          },
+        }),
+      )
       .then((record) => {
         this.record({
           event: 'run.finished',

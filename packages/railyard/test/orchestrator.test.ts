@@ -480,6 +480,64 @@ describe('safeguards: per-agent concurrency cap + queue (SPEC §6)', () => {
   })
 })
 
+describe('safeguards: secrets (SPEC §8)', () => {
+  const fakeSecrets = (values: Record<string, string>) => ({
+    resolve: async (name: string) => values[name],
+  })
+
+  it('fails start() loudly when a declared secret is unresolvable, naming it', async () => {
+    const { orchestrator } = await setup(
+      {
+        needy: { manifest: 'name: needy\nsecrets: [PRESENT, ABSENT]\non:\n  - type: demo.tick\n' },
+      },
+      { secrets: fakeSecrets({ PRESENT: 'ok' }) },
+    )
+    orchestrator.register(tickerMonitor())
+    await expect(orchestrator.start()).rejects.toThrow(/ABSENT \(agent "needy"\)/)
+  })
+
+  it('injects only the declared secrets, per agent', async () => {
+    const { orchestrator, executor } = await setup(
+      {
+        'needs-a': { manifest: 'name: needs-a\nsecrets: [TOKEN_A]\non:\n  - type: demo.tick\n' },
+        'needs-none': { manifest: 'name: needs-none\non:\n  - type: demo.tick\n' },
+      },
+      { secrets: fakeSecrets({ TOKEN_A: 'value-a', TOKEN_B: 'value-b' }) },
+    )
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
+    const byAgent = new Map(executor.calls.map((c) => [c.agent.name, c.env]))
+    expect(byAgent.get('needs-a')).toEqual({ TOKEN_A: 'value-a' })
+    expect(byAgent.get('needs-none')).toEqual({})
+    await orchestrator.stop()
+  })
+
+  it('a secret that vanishes between boot and spawn fails that run, journaled', async () => {
+    const values: Record<string, string> = { TOKEN: 'here' }
+    const { orchestrator, executor, entries } = await setup(
+      {
+        needy: { manifest: 'name: needy\nsecrets: [TOKEN]\non:\n  - type: demo.tick\n' },
+      },
+      { secrets: fakeSecrets(values) },
+    )
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    delete values.TOKEN
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => {
+      const finished = entries.find((e) => e.event === 'run.finished')
+      expect(finished).toMatchObject({ status: 'error' })
+      expect((finished as { error?: string }).error).toMatch(/TOKEN/)
+    })
+    expect(executor.calls).toHaveLength(0)
+    await orchestrator.stop()
+  })
+})
+
 describe('journal and lifecycle', () => {
   it('journals the complete story in order and mirrors it on the emitter', async () => {
     const { root, orchestrator, entries } = await setup({ echo: ECHO })

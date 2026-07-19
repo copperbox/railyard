@@ -48,6 +48,12 @@ export interface RunAgentParams {
    * manifest-schema default (900) — the safeguard is never silently absent.
    */
   timeoutSeconds?: number | null
+  /**
+   * Extra env vars for the container — the agent's resolved secrets (SPEC §8).
+   * Injected via value-less `-e NAME` flags + the docker CLI's process env, so
+   * values never appear on a command line.
+   */
+  env?: Record<string, string>
   /** Valid events-file lines, dispatched while the container is still running. */
   onEvent: (line: EventsLine) => void
   onMalformedEvent?: (raw: string, reason: string) => void
@@ -99,6 +105,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     '-e', `AGENT_EVENTS_FILE=${CONTAINER_PATHS.eventsFile}`,
   ]
   if (agent.manifest.network === 'none') createArgs.push('--network', 'none')
+  for (const name of Object.keys(params.env ?? {})) createArgs.push('-e', name)
   createArgs.push(imageRef)
 
   const tailer = new EventsTailer(eventsFile, {
@@ -114,7 +121,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
   let killDone: Promise<void> | undefined
 
   try {
-    await dockerOk(createArgs, `run ${runId}`)
+    await dockerOk(createArgs, `run ${runId}`, params.env ? { env: params.env } : undefined)
     await tailer.start()
     await dockerOk(['start', containerName], `run ${runId}`)
 

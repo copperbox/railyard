@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { ValidateFunction } from 'ajv/dist/2020.js'
-import type { AgentManifest, JsonSchema } from '../contracts/types.js'
+import { RESERVED_AGENT_ENV_VARS, type AgentManifest, type JsonSchema } from '../contracts/types.js'
 import {
   compilePayloadSchema,
   formatAjvErrors,
@@ -85,6 +85,14 @@ export async function loadAgentFolder(dir: string): Promise<LoadedAgent> {
     )
   }
   const manifest = parsed as AgentManifest
+
+  for (const secret of manifest.secrets) {
+    if ((RESERVED_AGENT_ENV_VARS as readonly string[]).includes(secret)) {
+      throw new Error(
+        `${manifestPath}: secret "${secret}" collides with a reserved container-contract env var (SPEC §5)`,
+      )
+    }
+  }
 
   const hasDockerfile = await fileExists(path.join(dir, 'Dockerfile'))
   if (manifest.image !== undefined && hasDockerfile) {

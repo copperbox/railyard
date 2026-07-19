@@ -6,6 +6,17 @@
 /** A JSON Schema document. `true`/`false` are valid schemas per the spec. */
 export type JsonSchema = Record<string, unknown> | boolean
 
+/**
+ * Env var names the container contract reserves (SPEC §5). A declared secret
+ * may not collide with these — silent clobbering would break the contract.
+ */
+export const RESERVED_AGENT_ENV_VARS = [
+  'AGENT_INPUT_DIR',
+  'AGENT_INPUT_FILE',
+  'AGENT_OUTPUT_DIR',
+  'AGENT_EVENTS_FILE',
+] as const
+
 export type SourceKind = 'monitor' | 'agent'
 
 export interface SignalSource {

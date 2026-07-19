@@ -1,4 +1,5 @@
 // Contracts (SPEC §2, §4, §5)
+export { RESERVED_AGENT_ENV_VARS } from './contracts/types.js'
 export type {
   AgentManifest,
   AgentSubscription,
@@ -58,6 +59,14 @@ export {
   type RunRecord,
 } from './run/runner.js'
 export { EventsTailer, type EventsTailerHandlers } from './run/events-tailer.js'
+
+// Secrets (SPEC §8)
+export {
+  EnvSecretsProvider,
+  parseDotEnv,
+  type EnvSecretsProviderOptions,
+  type SecretsProvider,
+} from './secrets/provider.js'
 
 // Journal (SPEC §12)
 export { Journal, type JournalEntry, type JournaledEntry } from './journal/journal.js'

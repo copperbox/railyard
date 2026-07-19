@@ -13,10 +13,21 @@ export interface DockerResult {
  */
 export function docker(
   args: string[],
-  options: { onStdoutLine?: (line: string) => void; onStderrLine?: (line: string) => void } = {},
+  options: {
+    onStdoutLine?: (line: string) => void
+    onStderrLine?: (line: string) => void
+    /**
+     * Extra env vars for the docker CLI process itself — how secret values reach
+     * value-less `-e NAME` flags without ever appearing on an argv (SPEC §8).
+     */
+    env?: Record<string, string>
+  } = {},
 ): Promise<DockerResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('docker', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: options.env ? { ...process.env, ...options.env } : undefined,
+    })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk: Buffer) => {

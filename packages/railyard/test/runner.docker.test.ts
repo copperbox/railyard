@@ -143,6 +143,35 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     expect(record.killReason).toBeNull()
   })
 
+  it('injects declared secrets as env vars — and only via the CLI process env (SPEC §8)', async () => {
+    // Lives outside fixtures/agents so the e2e orchestrator boot doesn't load it.
+    const secretAgent = await loadAgentFolder(
+      path.join(import.meta.dirname, 'fixtures/secret-check-agent'),
+    )
+    const secretImage = await ensureAgentImage(secretAgent)
+
+    const withSecret = await runAgent({
+      agent: secretAgent,
+      imageRef: secretImage,
+      signal: tickSignal({ n: 1 }),
+      runsDir,
+      env: { MY_SECRET: 'expected-secret-value' },
+      onEvent: () => {},
+    })
+    expect(withSecret.status).toBe('succeeded')
+    expect(withSecret.result).toEqual({ secretSeen: true })
+
+    const withoutSecret = await runAgent({
+      agent: secretAgent,
+      imageRef: secretImage,
+      signal: tickSignal({ n: 1 }),
+      runsDir,
+      onEvent: () => {},
+    })
+    expect(withoutSecret.status).toBe('failed')
+    expect(withoutSecret.exitCode).toBe(9)
+  })
+
   it('sweeps orphaned containers labeled with this runs root', async () => {
     await dockerOk(
       [

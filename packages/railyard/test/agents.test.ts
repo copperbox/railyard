@@ -171,6 +171,14 @@ describe('agent folder loading', () => {
       },
       /invalid JSON Schema/,
     ],
+    [
+      'a secret name colliding with a reserved container env var',
+      {
+        manifest: 'name: echo\nsecrets: [AGENT_INPUT_FILE]\non:\n  - type: t\n',
+        files: { Dockerfile: 'FROM alpine\n' },
+      },
+      /reserved container-contract env var/,
+    ],
   ])('fails loudly on %s', async (_name, spec, message) => {
     const dir = await makeAgentsDir({ echo: spec })
     await expect(loadAgents(dir)).rejects.toThrow(message)
