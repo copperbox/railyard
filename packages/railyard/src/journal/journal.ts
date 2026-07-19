@@ -24,6 +24,14 @@ export type JournalEntry =
       durationMs: number | null
       error?: string
     }
+  | {
+      /** A matched signal that will never run (SPEC §7 self-trigger refusal; queue drop at stop()). */
+      event: 'run.skipped'
+      agent: string
+      signalId: string
+      signalType: string
+      reason: 'self-trigger' | 'shutdown'
+    }
   | { event: 'note'; message: string }
 
 export type JournaledEntry = JournalEntry & { at: string }

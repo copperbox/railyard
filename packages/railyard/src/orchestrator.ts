@@ -30,6 +30,11 @@ export interface OrchestratorConfig {
   transport?: SignalTransport
   /** Execution backend; defaults to ephemeral Docker (SPEC §6). */
   executor?: AgentExecutor
+  /**
+   * Max provenance chain depth (SPEC §7); emissions beyond it are dropped and
+   * journaled. Default 5.
+   */
+  maxChainDepth?: number
   logger?: Logger
 }
 
@@ -55,12 +60,17 @@ export class Orchestrator {
   private readonly monitors: RegisteredMonitor[] = []
   private readonly imageRefs = new Map<string, string>()
   private readonly inFlight = new Set<Promise<unknown>>()
+  private readonly maxChainDepth: number
   private agents: LoadedAgent[] = []
   private phase: 'idle' | 'started' | 'stopped' = 'idle'
 
   constructor(config: OrchestratorConfig) {
     this.agentsDir = config.agentsDir
     this.runsDir = config.runsDir
+    this.maxChainDepth = config.maxChainDepth ?? 5
+    if (!Number.isInteger(this.maxChainDepth) || this.maxChainDepth < 1) {
+      throw new Error(`maxChainDepth must be a positive integer, got ${String(config.maxChainDepth)}`)
+    }
     this.stateDir = config.stateDir ?? path.join(path.dirname(path.resolve(config.runsDir)), 'state')
     this.logger = config.logger ?? consoleLogger('railyard')
     this.transport =
@@ -203,6 +213,12 @@ export class Orchestrator {
       this.record({ event: 'signal.dropped', reason, signalType: draft.type, source })
       throw new Error(reason)
     }
+    // Depth limit (SPEC §7): only agent emissions can hit this — monitor chains are empty.
+    if (provenance.length > this.maxChainDepth) {
+      fail(
+        `${source.kind} "${source.name}" emission "${draft.type}" dropped: provenance depth ${provenance.length} exceeds max chain depth ${this.maxChainDepth}`,
+      )
+    }
     if (validators !== null) {
       const validate = validators.get(draft.type)
       if (!validate) {
@@ -256,6 +272,22 @@ export class Orchestrator {
             message: `agent "${agent.name}": signal ${signal.id} (${signal.type}) failed its required payload schema, not matched`,
           })
           continue
+        }
+        // Self-trigger guard (SPEC §7): refusal is per-agent — the signal still
+        // reaches every other matching agent.
+        if (
+          signal.source.kind === 'agent' &&
+          signal.source.name === agent.name &&
+          !agent.manifest.allowSelfTrigger
+        ) {
+          this.record({
+            event: 'run.skipped',
+            agent: agent.name,
+            signalId: signal.id,
+            signalType: signal.type,
+            reason: 'self-trigger',
+          })
+          break
         }
         this.dispatch(agent, signal)
         break

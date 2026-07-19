@@ -50,7 +50,10 @@ interface AgentSpec {
   files?: Record<string, string>
 }
 
-async function setup(agentSpecs: Record<string, AgentSpec>) {
+async function setup(
+  agentSpecs: Record<string, AgentSpec>,
+  configExtra: Partial<ConstructorParameters<typeof Orchestrator>[0]> = {},
+) {
   const root = await mkdtemp(path.join(tmpdir(), 'railyard-orch-'))
   const agentsDir = path.join(root, 'agents')
   await mkdir(agentsDir)
@@ -72,9 +75,18 @@ async function setup(agentSpecs: Record<string, AgentSpec>) {
     stateDir: path.join(root, 'state'),
     executor,
     logger: silentLogger,
+    ...configExtra,
   })
   const entries: JournaledEntry[] = []
-  for (const event of ['signal.received', 'signal.dropped', 'run.started', 'run.finished', 'note'] as const) {
+  const events = [
+    'signal.received',
+    'signal.dropped',
+    'run.started',
+    'run.finished',
+    'run.skipped',
+    'note',
+  ] as const
+  for (const event of events) {
     orchestrator.on(event, (entry) => {
       entries.push(entry)
     })
@@ -234,6 +246,112 @@ describe('agent-emitted signals (SPEC §7 chaining, M0 shape)', () => {
       },
     ])
     await orchestrator.stop()
+  })
+})
+
+describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
+  it('lets a self-chaining agent run up to the depth limit, then drops + journals', async () => {
+    // looper re-triggers itself: tick (depth 0) → run → emit (depth 1) → run → …
+    // With maxChainDepth 3, emissions at depth 1..3 pass (4 runs total); the
+    // depth-4 emission is dropped and journaled.
+    const { orchestrator, executor, entries } = await setup(
+      {
+        looper: {
+          manifest: 'name: looper\nallowSelfTrigger: true\non:\n  - type: loop.go\n',
+        },
+      },
+      { maxChainDepth: 3 },
+    )
+    executor.behavior = (params) => {
+      params.onEvent({ kind: 'signal', type: 'loop.go', payload: {} })
+      return {}
+    }
+    const monitor = {
+      name: 'kickoff',
+      emits: [{ type: 'loop.go', payloadSchema: { type: 'object' } as const }],
+      ctx: undefined as MonitorContext | undefined,
+      async start(c: MonitorContext) {
+        this.ctx = c
+      },
+      async stop() {},
+    }
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.ctx!.emit({ type: 'loop.go', payload: {} })
+    await vi.waitFor(() => {
+      expect(entries.some((e) => e.event === 'signal.dropped')).toBe(true)
+    })
+    expect(executor.calls).toHaveLength(4)
+    const dropped = entries.find((e) => e.event === 'signal.dropped')!
+    expect(dropped).toMatchObject({ source: { kind: 'agent', name: 'looper' } })
+    expect((dropped as { reason: string }).reason).toMatch(/depth 4 exceeds max chain depth 3/)
+    await orchestrator.stop()
+  })
+
+  it('refuses a self-trigger by default and journals run.skipped', async () => {
+    const { orchestrator, executor, entries } = await setup({
+      echo: { manifest: 'name: echo\non:\n  - type: demo.tick\n  - type: echo.done\n' },
+    })
+    executor.behavior = () => {
+      executor.calls[executor.calls.length - 1]!.onEvent({
+        kind: 'signal',
+        type: 'echo.done',
+        payload: {},
+      })
+      return {}
+    }
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => {
+      expect(entries.some((e) => e.event === 'run.skipped')).toBe(true)
+    })
+    expect(executor.calls).toHaveLength(1)
+    expect(entries.find((e) => e.event === 'run.skipped')).toMatchObject({
+      agent: 'echo',
+      signalType: 'echo.done',
+      reason: 'self-trigger',
+    })
+    await orchestrator.stop()
+  })
+
+  it('a refused self-trigger still fans out to other matching agents', async () => {
+    const { orchestrator, executor, entries } = await setup({
+      emitter: { manifest: 'name: emitter\non:\n  - type: demo.tick\n  - type: emitter.done\n' },
+      other: { manifest: 'name: other\non:\n  - type: emitter.done\n' },
+    })
+    executor.behavior = (params) => {
+      if (params.agent.name === 'emitter') {
+        params.onEvent({ kind: 'signal', type: 'emitter.done', payload: {} })
+      }
+      return {}
+    }
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() =>
+      expect(executor.calls.map((c) => c.agent.name)).toEqual(['emitter', 'other']),
+    )
+    expect(entries.find((e) => e.event === 'run.skipped')).toMatchObject({
+      agent: 'emitter',
+      reason: 'self-trigger',
+    })
+    await orchestrator.stop()
+  })
+
+  it('rejects a non-positive maxChainDepth at construction', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'railyard-orch-'))
+    expect(
+      () =>
+        new Orchestrator({
+          agentsDir: path.join(root, 'agents'),
+          runsDir: path.join(root, 'runs'),
+          maxChainDepth: 0,
+          logger: silentLogger,
+        }),
+    ).toThrow(/maxChainDepth/)
   })
 })
 
