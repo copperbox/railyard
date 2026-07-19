@@ -1,0 +1,4 @@
+name: echo-agent
+on:
+  - type: demo.tick
+    payloadSchema: ./schemas/tick.json
