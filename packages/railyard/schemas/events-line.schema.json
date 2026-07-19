@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.copperbox.dev/railyard/events-line.schema.json",
+  "title": "Events-file line",
+  "description": "One JSON line appended by the agent to $AGENT_EVENTS_FILE. SPEC §5.",
+  "type": "object",
+  "required": ["kind"],
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["kind", "type", "payload"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "signal" },
+        "type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+        },
+        "payload": {}
+      }
+    },
+    {
+      "type": "object",
+      "required": ["kind", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "log" },
+        "level": {
+          "description": "Treated as info when omitted.",
+          "enum": ["debug", "info", "warn", "error"]
+        },
+        "message": { "type": "string" }
+      }
+    }
+  ]
+}

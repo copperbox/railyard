@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.copperbox.dev/railyard/agent-manifest.schema.json",
+  "title": "Agent manifest",
+  "description": "manifest.yaml inside an agent folder. SPEC §4. M1 fields (secrets, concurrency, timeout, network, allowSelfTrigger) are declared now so the disk contract does not churn; M0 validates them but only partially acts on them.",
+  "type": "object",
+  "required": ["name", "on"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Agent identity; must match expectations for container/image naming.",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "maxLength": 63
+    },
+    "on": {
+      "type": "array",
+      "description": "Subscriptions: which signals this agent fires on.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+          },
+          "filter": {
+            "type": "string",
+            "description": "Declarative JSONPath filter: '<jsonpath> <op> <json-literal>' with op == or !=. SPEC §3."
+          },
+          "payloadSchema": {
+            "type": "string",
+            "description": "Path, relative to the agent folder, of the JSON Schema this agent requires the payload to satisfy. Omitted = accepts any payload; no boot-time compatibility check for this subscription."
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "array",
+      "description": "Secret NAMES only; resolved at spawn via SecretsProvider. SPEC §8. (Enforced in M1.)",
+      "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+      "uniqueItems": true,
+      "default": []
+    },
+    "concurrency": {
+      "type": "integer",
+      "description": "Per-agent cap on simultaneous runs. (Enforced in M1.)",
+      "minimum": 1,
+      "default": 1
+    },
+    "timeout": {
+      "description": "Seconds before a framework-enforced kill; explicit null opts into an indefinite run. (Enforced in M1.)",
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": 900
+    },
+    "network": {
+      "enum": ["default", "none"],
+      "default": "default"
+    },
+    "allowSelfTrigger": {
+      "type": "boolean",
+      "description": "Whether this agent's own emissions may re-trigger it. SPEC §7. (Enforced in M1.)",
+      "default": false
+    },
+    "image": {
+      "type": "string",
+      "description": "Prebuilt image reference (bring-your-own-image). Mutually exclusive with a Dockerfile in the folder; that exclusivity is checked by the loader, not this schema.",
+      "minLength": 1
+    }
+  }
+}

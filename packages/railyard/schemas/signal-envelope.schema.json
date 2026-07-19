@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.copperbox.dev/railyard/signal-envelope.schema.json",
+  "title": "Signal envelope",
+  "description": "A signal as it travels on the bus: framework-set envelope plus emitter-set type and payload. SPEC §2.",
+  "type": "object",
+  "required": ["id", "timestamp", "source", "provenance", "type", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique per emission. The framework does not dedup.",
+      "pattern": "^sig_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "provenance": {
+      "type": "array",
+      "description": "Ordered causality chain: the (source, signal) pairs that led to this emission, oldest first. Empty for monitor-emitted signals. SPEC §7.",
+      "items": {
+        "type": "object",
+        "required": ["source", "signalId", "signalType"],
+        "additionalProperties": false,
+        "properties": {
+          "source": { "$ref": "#/$defs/source" },
+          "signalId": { "type": "string" },
+          "signalType": { "type": "string" }
+        }
+      }
+    },
+    "type": {
+      "$ref": "#/$defs/signalType"
+    },
+    "payload": {
+      "description": "Arbitrary JSON, validated against the emitter's declared JSON Schema."
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["monitor", "agent"] },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "signalType": {
+      "type": "string",
+      "description": "Namespaced signal type, e.g. github.issue.labeled.",
+      "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+    }
+  }
+}

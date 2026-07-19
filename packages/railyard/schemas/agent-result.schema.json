@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.copperbox.dev/railyard/agent-result.schema.json",
+  "title": "Agent result",
+  "description": "result.json written by the agent to $AGENT_OUTPUT_DIR. Deliberately unconstrained: any JSON value. The framework wraps it in the run record; it never interprets it.",
+  "$comment": "SPEC §5. Success/failure is determined by the process exit code, not by this document."
+}
