@@ -373,6 +373,7 @@ export class Orchestrator {
         signal,
         runsDir: this.runsDir,
         runId,
+        timeoutSeconds: agent.manifest.timeout,
         onEvent: (line) => {
           if (line.kind === 'signal') {
             try {
@@ -400,6 +401,7 @@ export class Orchestrator {
           status: record.status,
           exitCode: record.exitCode,
           durationMs: record.durationMs,
+          ...(record.killReason !== null ? { killReason: record.killReason } : {}),
         })
       })
       .catch((err: unknown) => {

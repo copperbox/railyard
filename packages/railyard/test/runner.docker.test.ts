@@ -108,6 +108,41 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     expect(await containersFor(record.runId)).toEqual([])
   })
 
+  it('hard-kills a run past its timeout, records killReason, still tears down (SPEC §6)', async () => {
+    const started = Date.now()
+    const record = await runAgent({
+      agent,
+      imageRef,
+      signal: tickSignal({ n: 5, sleep: 60 }),
+      runsDir,
+      timeoutSeconds: 2,
+      onEvent: () => {},
+    })
+    expect(Date.now() - started).toBeLessThan(30_000)
+    expect(record.status).toBe('failed')
+    expect(record.exitCode).toBe(137)
+    expect(record.killReason).toBe('timeout: exceeded 2s')
+    // Output emitted before the kill is preserved.
+    const runDir = path.join(runsDir, record.runId)
+    for (const file of ['invocation.json', 'agent.log', 'events.jsonl', 'result.json']) {
+      expect((await stat(path.join(runDir, file))).isFile(), file).toBe(true)
+    }
+    expect(await containersFor(record.runId)).toEqual([])
+  }, 40_000)
+
+  it('timeout: null means no timer — the run completes on its own', async () => {
+    const record = await runAgent({
+      agent,
+      imageRef,
+      signal: tickSignal({ n: 2, sleep: 2 }),
+      runsDir,
+      timeoutSeconds: null,
+      onEvent: () => {},
+    })
+    expect(record.status).toBe('succeeded')
+    expect(record.killReason).toBeNull()
+  })
+
   it('sweeps orphaned containers labeled with this runs root', async () => {
     await dockerOk(
       [

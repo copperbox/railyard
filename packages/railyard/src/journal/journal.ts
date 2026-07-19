@@ -22,6 +22,8 @@ export type JournalEntry =
       status: RunRecord['status'] | 'error'
       exitCode: number | null
       durationMs: number | null
+      /** Present when the framework killed the run (timeout, SPEC §6). */
+      killReason?: string
       error?: string
     }
   | {

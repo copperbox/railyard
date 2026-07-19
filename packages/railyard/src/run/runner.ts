@@ -31,7 +31,7 @@ export interface RunRecord {
   result: unknown
   /** Why result is null despite success, e.g. unparsable result.json. */
   resultError: string | null
-  /** M0: always null. M1 fills it on timeout kills. */
+  /** Why the framework killed the run (e.g. "timeout: exceeded 900s"); null otherwise. */
   killReason: string | null
 }
 
@@ -42,6 +42,12 @@ export interface RunAgentParams {
   runsDir: string
   /** Caller-assigned id (see makeRunId) so run.started can be journaled before the container exists. */
   runId?: string
+  /**
+   * Hard-kill deadline in seconds, counted from container start (SPEC §6).
+   * `null` = the user explicitly opted into an indefinite run. Omitted = the
+   * manifest-schema default (900) — the safeguard is never silently absent.
+   */
+  timeoutSeconds?: number | null
   /** Valid events-file lines, dispatched while the container is still running. */
   onEvent: (line: EventsLine) => void
   onMalformedEvent?: (raw: string, reason: string) => void
@@ -100,13 +106,28 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     onMalformed: params.onMalformedEvent ?? (() => {}),
   })
   const logStream = createWriteStream(path.join(runDir, 'agent.log'))
+  const timeoutSeconds = params.timeoutSeconds === undefined ? 900 : params.timeoutSeconds
   const startedAt = new Date()
   let exitCode: number | null = null
+  let killReason: string | null = null
+  let killTimer: NodeJS.Timeout | undefined
+  let killDone: Promise<void> | undefined
 
   try {
     await dockerOk(createArgs, `run ${runId}`)
     await tailer.start()
     await dockerOk(['start', containerName], `run ${runId}`)
+
+    // Hard timeout (SPEC §6): SIGKILL the container so the wait/logs path below
+    // completes normally and teardown stays on the one guaranteed route.
+    if (timeoutSeconds !== null) {
+      killTimer = setTimeout(() => {
+        killDone = docker(['kill', containerName]).then((res) => {
+          // A failed kill means the container had already exited — not a timeout.
+          if (res.code === 0) killReason = `timeout: exceeded ${timeoutSeconds}s`
+        })
+      }, timeoutSeconds * 1000)
+    }
 
     // `docker logs --follow` replays from the beginning, so nothing between
     // start and attach is lost; it ends when the container exits.
@@ -119,6 +140,9 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     if (Number.isNaN(exitCode)) exitCode = -1
     await logsDone
   } finally {
+    if (killTimer !== undefined) clearTimeout(killTimer)
+    // If the timer already fired, learn whether it actually killed before we record.
+    await killDone?.catch(() => {})
     await tailer.stop().catch(() => {})
     logStream.end()
     // Guaranteed teardown (SPEC §6): remove the container on every path.
@@ -150,7 +174,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     status: exitCode === 0 ? 'succeeded' : 'failed',
     result,
     resultError,
-    killReason: null,
+    killReason,
   }
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(record, null, 2))
   return record

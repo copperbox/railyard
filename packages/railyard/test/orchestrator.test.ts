@@ -342,6 +342,24 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
     await orchestrator.stop()
   })
 
+  it('plumbs manifest timeout to the executor: schema default 900, explicit value, explicit null', async () => {
+    const { orchestrator, executor } = await setup({
+      'default-timeout': { manifest: 'name: default-timeout\non:\n  - type: demo.tick\n' },
+      'short-timeout': { manifest: 'name: short-timeout\ntimeout: 30\non:\n  - type: demo.tick\n' },
+      forever: { manifest: 'name: forever\ntimeout: null\non:\n  - type: demo.tick\n' },
+    })
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(3))
+    const byAgent = new Map(executor.calls.map((c) => [c.agent.name, c.timeoutSeconds]))
+    expect(byAgent.get('default-timeout')).toBe(900)
+    expect(byAgent.get('short-timeout')).toBe(30)
+    expect(byAgent.get('forever')).toBeNull()
+    await orchestrator.stop()
+  })
+
   it('rejects a non-positive maxChainDepth at construction', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'railyard-orch-'))
     expect(
