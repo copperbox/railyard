@@ -5,7 +5,7 @@ tags:
   - milestone-m1
   - secrets
   - redaction
-timestamp: 2026-07-19T23:15:56.920Z
+timestamp: 2026-07-19T23:38:06.974Z
 ---
 
 Railyard's secret redaction (SPEC §8) is **literal substring replacement**: every
@@ -39,6 +39,8 @@ URL-encoded copies of a secret are not caught (same accepted-residual-risk postu
 SPEC §8's in-container visibility note).
 
 Multi-line secret values (e.g. PEM keys) additionally register each individual line as
-a pattern, so line-oriented sinks (agent.log) still catch them.
+a pattern, so line-oriented sinks (agent.log) still catch them. Implementation notes
+(line-buffered log capture, temp+rename rewrites of container-owned files, which
+sinks are covered) live in [M1 design decisions](/decisions/m1-design-decisions.md).
 
 Related: [M0 design decisions](/decisions/m0-design-decisions.md).

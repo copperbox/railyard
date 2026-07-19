@@ -1,7 +1,8 @@
 # M1 implementation plan — safeguards & secrets
 
-> **Status: IN PROGRESS (approved 2026-07-19).** Decisions table at the bottom;
-> veto anytime before the step that locks each one in.
+> **Status: COMPLETE (2026-07-19).** All steps implemented; 131 tests green
+> without Docker (`pnpm test`), 141 with (`pnpm test:docker`). Decisions table
+> at the bottom reflects what shipped. Next: M2 (Claude Code scaffold).
 
 Goal (from SPEC §15): concurrency caps + queueing, hard timeouts (incl. explicit
 `timeout: null`), provenance depth limit + self-trigger guard, `SecretsProvider` +
@@ -233,7 +234,7 @@ M0's public exports unchanged (only added to).
 | 7 | Secret injection | Value-less `-e NAME` docker flags; values passed via the docker child process env | Values never appear on an argv (readable in `/proc`); container-side visibility is §8's accepted residual risk |
 | 8 | Resolution timing | Boot check resolves all names once (fail fast); each spawn re-resolves | §8 says both "at spawn" and "boot-time check"; re-resolving makes rotation work without restart |
 | 9 | Redaction mechanics | Literal replacement with `[REDACTED:<NAME>]`; multi-line values also register per-line; values < 6 chars excluded with a loud boot warning | Literal matching is honest and predictable; redacting `"1"` everywhere destroys records — a loud warning beats silent false confidence |
-| 10 | Redaction sinks | Journal, framework logger, line-buffered agent.log, emitted payloads (redacted before validation), invocation.json, framework result.json, and post-run rewrite of preserved events.jsonl | Covers every §8-listed sink plus the one on-disk file §8 missed; redact-then-validate means the wire format is the validated format |
+| 10 | Redaction sinks | Journal (and the mirrored emitter events), framework logger, line-buffered agent.log, emitted payloads (redacted before validation), invocation.json, framework result.json, post-run rewrite of preserved events.jsonl **and the agent's own output/result.json** (via temp+rename — container files may be root-owned). Arbitrary other agent-written output files are documented as not rewritten | Covers every §8-listed sink plus the on-disk files §8 missed; redact-then-validate means the wire format is the validated format; rewriting arbitrary agent output (possibly binary) is out of scope |
 | 11 | Retention rule combination | Delete the union of what each rule selects; active run-ids always excluded; only run-shaped directories ever touched | "Whichever prunes more wins" (SPEC §12) = union; structural exemption for journal.jsonl beats a denylist |
 | 12 | New journal events | `run.queued`, `run.skipped` (reason: `self-trigger` \| `shutdown`), `retention.swept`; `run.finished` gains optional `killReason`; depth drops reuse `signal.dropped` | One skipped-event with a reason enum instead of two near-identical events; every invariant-10 case journaled; all plain JSON |
 | 13 | Reserved env names | A declared secret named like a contract var (`AGENT_INPUT_FILE`, …) fails boot | Silent clobbering of the container contract would be a 2am bug; fail loudly at boot (invariant 4) |

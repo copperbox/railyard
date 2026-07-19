@@ -290,6 +290,39 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
     await orchestrator.stop()
   })
 
+  it('enforces the default depth limit of 5 when maxChainDepth is not configured', async () => {
+    const { orchestrator, executor, entries } = await setup({
+      looper: {
+        manifest: 'name: looper\nallowSelfTrigger: true\non:\n  - type: loop.go\n',
+      },
+    })
+    executor.behavior = (params) => {
+      params.onEvent({ kind: 'signal', type: 'loop.go', payload: {} })
+      return {}
+    }
+    const monitor = {
+      name: 'kickoff',
+      emits: [{ type: 'loop.go', payloadSchema: { type: 'object' } as const }],
+      ctx: undefined as MonitorContext | undefined,
+      async start(c: MonitorContext) {
+        this.ctx = c
+      },
+      async stop() {},
+    }
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.ctx!.emit({ type: 'loop.go', payload: {} })
+    await vi.waitFor(() => {
+      expect(entries.some((e) => e.event === 'signal.dropped')).toBe(true)
+    })
+    // Monitor signal (depth 0) + emissions at depth 1..5 run; depth 6 is dropped.
+    expect(executor.calls).toHaveLength(6)
+    expect(
+      (entries.find((e) => e.event === 'signal.dropped') as { reason: string }).reason,
+    ).toMatch(/depth 6 exceeds max chain depth 5/)
+    await orchestrator.stop()
+  })
+
   it('refuses a self-trigger by default and journals run.skipped', async () => {
     const { orchestrator, executor, entries } = await setup({
       echo: { manifest: 'name: echo\non:\n  - type: demo.tick\n  - type: echo.done\n' },

@@ -9,6 +9,8 @@ const orchestrator = new Orchestrator({
   agentsDir: path.join(here, '../agents'),
   runsDir: path.join(here, '../runs'),
   stateDir: path.join(here, '../state'),
+  // M1 safeguards, demoed: keep the newest 20 runs per agent.
+  retention: { maxRunsPerAgent: 20 },
 })
 
 orchestrator.register(new IntervalMonitor(5000))

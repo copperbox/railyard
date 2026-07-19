@@ -94,3 +94,61 @@ describe.skipIf(!DOCKER)('docker: end-to-end walking skeleton (SPEC §15 M0)', (
     expect(state).toEqual({ n: 1 })
   })
 })
+
+describe.skipIf(!DOCKER)('docker: agent chaining exit proof (SPEC §15 M1)', () => {
+  it('one agent’s emitted signal triggers a second agent, with provenance', { timeout: 120_000 }, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'railyard-chain-'))
+    const runsDir = path.join(root, 'runs')
+
+    const monitor: Monitor = {
+      name: 'kickoff',
+      emits: [
+        {
+          type: 'demo.tick',
+          payloadSchema: { type: 'object', required: ['n'], properties: { n: { type: 'number' } } },
+        },
+      ],
+      async start(ctx) {
+        ctx.emit({ type: 'demo.tick', payload: { n: 7 } })
+      },
+      async stop() {},
+    }
+
+    const orchestrator = new Orchestrator({
+      agentsDir: path.join(import.meta.dirname, 'fixtures/chain-agents'),
+      runsDir,
+      stateDir: path.join(root, 'state'),
+      logger: silentLogger,
+    })
+    orchestrator.register(monitor)
+    const finished: JournaledEntry[] = []
+    orchestrator.on('run.finished', (e) => {
+      finished.push(e)
+    })
+
+    await orchestrator.start()
+    await vi.waitFor(() => expect(finished).toHaveLength(2), { timeout: 90_000, interval: 250 })
+    await orchestrator.stop()
+
+    const byAgent = new Map(finished.map((e) => ['agent' in e ? e.agent : '', e]))
+    expect(byAgent.get('chain-emitter')).toMatchObject({ status: 'succeeded' })
+    expect(byAgent.get('chain-receiver')).toMatchObject({ status: 'succeeded' })
+
+    // The receiver got the emitter's payload…
+    const receiverRunId = (byAgent.get('chain-receiver') as { runId: string }).runId
+    const receiverDir = path.join(runsDir, receiverRunId)
+    const record = JSON.parse(await readFile(path.join(receiverDir, 'result.json'), 'utf8'))
+    expect(record.result).toEqual({ receivedN: 7 })
+
+    // …from a signal whose envelope names the emitter and carries the chain
+    // back to the monitor: provenance depth 1 (SPEC §7).
+    const invocation = JSON.parse(await readFile(path.join(receiverDir, 'invocation.json'), 'utf8'))
+    expect(invocation.signal.type).toBe('chain.step')
+    expect(invocation.signal.source).toEqual({ kind: 'agent', name: 'chain-emitter' })
+    expect(invocation.signal.provenance).toHaveLength(1)
+    expect(invocation.signal.provenance[0]).toMatchObject({
+      source: { kind: 'monitor', name: 'kickoff' },
+      signalType: 'demo.tick',
+    })
+  })
+})
