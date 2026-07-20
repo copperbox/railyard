@@ -1,8 +1,11 @@
 {
   "name": "@copperbox/railyard",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Pub/sub-style, multi-provider AI agent orchestration: monitors emit signals, agents run as ephemeral Docker containers.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/copperbox/railyard.git",

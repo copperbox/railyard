@@ -1,0 +1,61 @@
+# Publish a package to npm with provenance. Wired for releases AFTER the first
+# 1.0.0 (which is published locally/manually — see RELEASING.md), because npm
+# provenance requires an OIDC publish from CI and cannot be produced locally.
+#
+# Trigger by pushing a tag like `railyard@1.2.3` or `monitor-github@1.2.3`, or
+# run manually and pass the package dir. Requires an NPM_TOKEN repo secret
+# (an npm automation token that can publish to the @copperbox scope).
+name: release
+
+on:
+  push:
+    tags:
+      - '*@*'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package dir under packages/ (e.g. railyard or railyard-monitor-github)'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target package dir
+        id: target
+        run: |
+          if [ -n "${{ github.event.inputs.package }}" ]; then
+            dir="${{ github.event.inputs.package }}"
+          else
+            # tag `railyard@x` -> railyard; `monitor-github@x` -> railyard-monitor-github
+            name="${GITHUB_REF_NAME%@*}"
+            case "$name" in
+              railyard) dir="railyard" ;;
+              monitor-github|railyard-monitor-github) dir="railyard-monitor-github" ;;
+              *) echo "unrecognized tag prefix: $name" >&2; exit 1 ;;
+            esac
+          fi
+          echo "dir=packages/$dir" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r test # unit gates; run docker/github gates locally before tagging (RELEASING.md)
+
+      - name: Publish with provenance
+        working-directory: ${{ steps.target.outputs.dir }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
