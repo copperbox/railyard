@@ -12,7 +12,13 @@ export interface SecretsProvider {
 }
 
 export interface EnvSecretsProviderOptions {
-  /** `.env` file consulted after the environment; default `<cwd>/.env`. Missing file is fine. */
+  /**
+   * `.env` file consulted after the environment; default `<cwd>/.env`. Missing
+   * file is fine. Note the default is **cwd-relative** — the working directory
+   * the process was started from, which for a workspace app run via `pnpm start`
+   * is the package dir, not the repo root. Pass an explicit absolute path (e.g.
+   * resolved from `import.meta.url`) if you want one `.env` regardless of cwd.
+   */
   envFile?: string
   /** Environment map consulted first; default `process.env`. */
   env?: Record<string, string | undefined>

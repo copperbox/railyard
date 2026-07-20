@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { MonitorContext } from '../src/monitor/monitor.js'
 import type { AgentExecutor } from '../src/run/executor.js'
 import type { RunAgentParams, RunRecord } from '../src/run/runner.js'
@@ -166,6 +166,30 @@ describe('routing', () => {
     expect(signal.type).toBe('demo.tick')
     expect(signal.source).toEqual({ kind: 'monitor', name: 'ticker' })
     expect(signal.provenance).toEqual([])
+    await orchestrator.stop()
+  })
+
+  it('on(event) narrows the entry type to that event (M4 friction fix)', async () => {
+    const { orchestrator, executor } = await setup({ echo: ECHO })
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    // The narrowed handler sees run.finished's own fields (status, exitCode,
+    // durationMs) without an `in`/`event !==` guard — the type-level proof.
+    let seenStatus: string | undefined
+    orchestrator.on('run.finished', (e) => {
+      expectTypeOf(e.status).toEqualTypeOf<RunRecord['status'] | 'error'>()
+      expectTypeOf(e.exitCode).toEqualTypeOf<number | null>()
+      seenStatus = e.status
+    })
+    // signal.received narrows to its own fields; touching a run.finished-only
+    // field here would not compile.
+    orchestrator.on('signal.received', (e) => {
+      expectTypeOf(e.signalType).toEqualTypeOf<string>()
+    })
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    await vi.waitFor(() => expect(seenStatus).toBe('succeeded'))
     await orchestrator.stop()
   })
 

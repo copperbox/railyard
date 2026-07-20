@@ -29,16 +29,14 @@ orchestrator.register(
 )
 
 // Narrate the workflow on the terminal; the journal keeps the durable copy.
+// on(event) narrows the entry to that event, so no per-handler type guard.
 orchestrator.on('signal.received', (e) => {
-  if (e.event !== 'signal.received') return
   console.log(`[${e.at}] signal ${e.signalType} from ${e.source.kind}:${e.source.name} (${e.signalId})`)
 })
 orchestrator.on('run.started', (e) => {
-  if (e.event !== 'run.started') return
   console.log(`[${e.at}] run ${e.runId} started: agent=${e.agent} signal=${e.signalId}`)
 })
 orchestrator.on('run.finished', (e) => {
-  if (e.event !== 'run.finished') return
   console.log(
     `[${e.at}] run ${e.runId} finished: status=${e.status} exit=${e.exitCode} in ${e.durationMs}ms` +
       (e.error ? ` — ${e.error}` : ''),

@@ -38,7 +38,14 @@ resolved, or if the agent's schema copy drifts from the monitor's published sche
 
 Then label an issue on `copperbox/railyard` with `needs-review`. Within one poll
 interval (60 s) the terminal narrates signal → run, and the review appears in
-`runs/<timestamp>--issue-reviewer--<id>/output/result.json`.
+`runs/<timestamp>--issue-reviewer--<id>/output/result.json`. That file is Claude's
+result object verbatim (the framework never invents a cross-provider schema); the
+review markdown is its `result` field:
+
+```sh
+jq -r .result runs/*/output/result.json | less   # read the reviews
+jq -r '.total_cost_usd' runs/*/output/result.json  # per-run cost
+```
 
 Note the monitor **baselines on first start**: history is never replayed, so label an
 issue *after* the app is up (or delete `state/` to re-baseline).

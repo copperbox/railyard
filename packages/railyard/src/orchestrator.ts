@@ -131,13 +131,19 @@ export class Orchestrator {
     this.monitors.push({ monitor, validators: compileDeclaredEmissions(monitor.name, monitor.emits) })
   }
 
-  on(event: JournaledEntry['event'], handler: (entry: JournaledEntry) => void): this {
-    this.emitter.on(event, handler)
+  on<E extends JournaledEntry['event']>(
+    event: E,
+    handler: (entry: Extract<JournaledEntry, { event: E }>) => void,
+  ): this {
+    this.emitter.on(event, handler as (entry: JournaledEntry) => void)
     return this
   }
 
-  off(event: JournaledEntry['event'], handler: (entry: JournaledEntry) => void): this {
-    this.emitter.off(event, handler)
+  off<E extends JournaledEntry['event']>(
+    event: E,
+    handler: (entry: Extract<JournaledEntry, { event: E }>) => void,
+  ): this {
+    this.emitter.off(event, handler as (entry: JournaledEntry) => void)
     return this
   }
 
