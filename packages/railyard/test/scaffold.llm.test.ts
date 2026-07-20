@@ -21,13 +21,26 @@ const SCAFFOLD = path.join(import.meta.dirname, '../../../scaffolds/claude-code'
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} }
 
 describe.skipIf(!LLM)('llm: claude-code scaffold does real LLM work (SPEC §15 M2)', () => {
-  let apiKey: string
+  // Any of the scaffold's accepted auth secrets works; first resolvable wins.
+  // NOTE: if several are set, the one chosen here is also the one Claude Code
+  // will prefer in-container for API-key-vs-OAuth — an invalid ANTHROPIC_API_KEY
+  // shadows a valid CLAUDE_CODE_OAUTH_TOKEN, so unset stale credentials.
+  const AUTH_PREFERENCE = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN']
+  let authName: string
+  let authValue: string
 
   beforeAll(async () => {
     expect(await dockerDaemonAvailable(), 'docker daemon must be reachable for llm tests').toBe(true)
-    const resolved = await new EnvSecretsProvider().resolve('ANTHROPIC_API_KEY')
-    expect(resolved, 'ANTHROPIC_API_KEY must be set (env or .env) for llm tests').toBeDefined()
-    apiKey = resolved!
+    const provider = new EnvSecretsProvider()
+    for (const name of AUTH_PREFERENCE) {
+      const resolved = await provider.resolve(name)
+      if (resolved !== undefined) {
+        authName = name
+        authValue = resolved
+        return
+      }
+    }
+    expect.fail(`one of ${AUTH_PREFERENCE.join(', ')} must be set (env or .env) for llm tests`)
   })
 
   it('signal → rendered prompt → real Claude Code run → derived answer in result.json', { timeout: 900_000 }, async () => {
@@ -49,7 +62,7 @@ describe.skipIf(!LLM)('llm: claude-code scaffold does real LLM work (SPEC §15 M
     await copyFile(path.join(SCAFFOLD, 'entrypoint.mjs'), path.join(agentDir, 'entrypoint.mjs'))
     await writeFile(
       path.join(agentDir, 'manifest.yaml'),
-      'name: llm-proof\nsecrets: [ANTHROPIC_API_KEY]\non:\n  - type: demo.word\n',
+      `name: llm-proof\nsecrets: [${authName}]\non:\n  - type: demo.word\n`,
     )
     // Answering requires actually reading the interpolated payload — this is
     // the "real (if small) LLM work", asserted semantically below.
@@ -90,6 +103,18 @@ describe.skipIf(!LLM)('llm: claude-code scaffold does real LLM work (SPEC §15 M
     await vi.waitFor(() => expect(finished).toHaveLength(1), { timeout: 600_000, interval: 500 })
     await orchestrator.stop()
 
+    // A bare "status: failed" is useless for diagnosing a real provider run —
+    // surface the preserved container artifacts in the failure itself.
+    const entry = finished[0] as { status: string; runId: string; exitCode: number | null }
+    if (entry.status !== 'succeeded') {
+      const show = async (file: string) =>
+        `--- ${file} ---\n${await readFile(path.join(runsDir, entry.runId, file), 'utf8').catch((err: unknown) => `(unreadable: ${String(err)})`)}`
+      throw new Error(
+        `llm-proof run ${entry.status} (exit ${entry.exitCode}, auth via ${authName}); ` +
+          `run dir: ${path.join(runsDir, entry.runId)}\n` +
+          `${await show('agent.log')}\n${await show('events.jsonl')}\n${await show('output/result.json')}`,
+      )
+    }
     expect(finished[0]).toMatchObject({ agent: 'llm-proof', status: 'succeeded', exitCode: 0 })
 
     const runId = (finished[0] as { runId: string }).runId
@@ -102,12 +127,12 @@ describe.skipIf(!LLM)('llm: claude-code scaffold does real LLM work (SPEC §15 M
     expect(record.result.result).toContain('RAILYARD-SAYS: PEREGRINE')
     expect(record.result.total_cost_usd).toBeGreaterThan(0)
 
-    // Redaction holds on the real provider path: the key appears nowhere under runs/.
+    // Redaction holds on the real provider path: the credential appears nowhere under runs/.
     const files = await readdir(runsDir, { recursive: true, withFileTypes: true })
-    for (const entry of files) {
-      if (!entry.isFile()) continue
-      const p = path.join(entry.parentPath, entry.name)
-      expect(await readFile(p, 'utf8'), p).not.toContain(apiKey)
+    for (const dirent of files) {
+      if (!dirent.isFile()) continue
+      const p = path.join(dirent.parentPath, dirent.name)
+      expect(await readFile(p, 'utf8'), p).not.toContain(authValue)
     }
   })
 })
