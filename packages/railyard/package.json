@@ -27,7 +27,8 @@
     "build": "tsup src/index.ts --format esm --dts --clean",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:docker": "cross-env RAILYARD_DOCKER_TESTS=1 vitest run"
+    "test:docker": "cross-env RAILYARD_DOCKER_TESTS=1 vitest run",
+    "test:llm": "cross-env RAILYARD_DOCKER_TESTS=1 RAILYARD_LLM_TESTS=1 vitest run"
   },
   "dependencies": {
     "ajv": "^8.17.1",
