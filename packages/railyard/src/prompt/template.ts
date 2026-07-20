@@ -48,7 +48,8 @@ export function parsePromptTemplate(source: string, context: string): ParsedProm
       const snippet = source.slice(open, open + 40).split('\n')[0]
       throw new Error(
         `${context}: malformed placeholder at offset ${open}: "${snippet}" — expected {{ <dot.path> }} ` +
-          `with segments matching [A-Za-z0-9_-]+ (no escapes for literal "{{" exist yet)`,
+          `with segments matching [A-Za-z0-9_-]+. A literal "{{" is unsupported in Signal Contract v1 ` +
+          `(there is no escape yet; see docs/contracts/prompt-template-grammar.md).`,
       )
     }
     segments.push({ kind: 'placeholder', path: match[1]!.split('.'), raw: match[0] })

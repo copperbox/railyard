@@ -619,7 +619,12 @@ describe('safeguards: secrets (SPEC §8)', () => {
       { secrets: fakeSecrets({ PRESENT: 'ok' }) },
     )
     orchestrator.register(tickerMonitor())
-    await expect(orchestrator.start()).rejects.toThrow(/ABSENT \(agent "needy"\)/)
+    const err = await orchestrator.start().catch((e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
+    // Names the missing secret AND where it's looked up — the M4 friction was a
+    // stranger not knowing a secret resolves cwd-relative from .env by default.
+    expect((err as Error).message).toMatch(/ABSENT \(agent "needy"\)/)
+    expect((err as Error).message).toMatch(/process env, then a .*\.env file.*cwd-relative/)
   })
 
   it('injects only the declared secrets, per agent', async () => {

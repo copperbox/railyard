@@ -61,6 +61,14 @@ describe('parsePromptTemplate', () => {
       /agents\/foo\/prompt\.md: malformed placeholder at offset \d+/,
     )
   })
+
+  it('names the v1 literal-{{ limitation and points at the grammar doc (issue #3)', () => {
+    // A user trying to write a literal "{{" should learn it's a known Contract v1
+    // limitation with a doc to read, not just "malformed".
+    expect(() => parsePromptTemplate('use {{ like this', 'p.md')).toThrow(
+      /Signal Contract v1.*docs\/contracts\/prompt-template-grammar\.md/s,
+    )
+  })
 })
 
 describe('renderPromptTemplate', () => {

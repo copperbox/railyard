@@ -202,7 +202,11 @@ export class Orchestrator {
       }
     }
     if (unresolvable.length > 0) {
-      throw new Error(`unresolvable secret(s):\n- ${[...new Set(unresolvable)].join('\n- ')}`)
+      throw new Error(
+        `unresolvable secret(s):\n- ${[...new Set(unresolvable)].join('\n- ')}\n` +
+          `Each is a name resolved via the SecretsProvider (default: process env, then a ` +
+          `.env file — cwd-relative unless you pass an explicit envFile). See docs/credential-scoping.md.`,
+      )
     }
 
     // 4. Build/pull every agent image.
