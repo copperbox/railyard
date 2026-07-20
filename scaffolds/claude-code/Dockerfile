@@ -1,7 +1,8 @@
 # Claude Code agent scaffold (SPEC §13, M2). Copy the folder, edit manifest.yaml
 # and prompt.md; this Dockerfile rarely needs changes. The image is generic —
-# nothing agent-specific is baked in — so the same build also serves as the
-# published ghcr helper image for `image:`-based agents.
+# nothing agent-specific is baked in — so one build can back many prompt-only
+# agents via `image:`. railyard publishes no image; the image is yours to build
+# and (if you deploy) push to a registry you own (SPEC §14).
 FROM node:22-bookworm-slim
 
 # git + certs for real agent work; the glibc base keeps Claude Code's bundled

@@ -26,6 +26,17 @@ provider, which prompts, which guardrails, what the agent actually does).
   into the run record. The container declares Claude auth as its *only* secret — the
   signal payload is the whole input, so the agent gets zero GitHub access.
 
+## Documentation
+
+Full guides and the versioned contract reference live in [`docs/`](docs/README.md):
+
+- [Getting started](docs/getting-started.md) — install, mental model, two runnable tracks.
+- [Authoring monitors](docs/authoring-monitors.md) · [Authoring agents](docs/authoring-agents.md)
+- [Container contract](docs/container-contract.md) · [Credential scoping](docs/credential-scoping.md)
+- [Signal Contract v1](docs/contracts/README.md) — the language-neutral, versioned wire/disk
+  contracts (signal envelope, `github.issue.*` payloads, prompt + filter grammars) the
+  Python/Rust ports must reproduce.
+
 ## Tests
 
 - `pnpm test` — unit tests, no Docker needed.

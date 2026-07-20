@@ -110,4 +110,10 @@ chains are depth-limited. SPEC §7.)
 ## Credential scoping
 
 Anything inside the container can read its injected env — that's SPEC §8's
-accepted residual risk. Use a spend-capped, least-privilege API key.
+accepted residual risk. Use a spend-capped, least-privilege API key. See the
+[credential scoping guide](../../docs/credential-scoping.md).
+
+## More
+
+- [Authoring agents](../../docs/authoring-agents.md) — the agent folder and manifest reference.
+- [Container contract](../../docs/container-contract.md) — what this entrypoint must honor.

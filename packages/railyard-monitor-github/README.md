@@ -124,3 +124,9 @@ To unit-test your own monitors the same way, core exports the harness this packa
 uses: `createMonitorTestContext(monitor.emits)` returns a real `MonitorContext` with
 orchestrator-identical emit validation, captured emissions/logs, and an in-memory
 `ctx.state`.
+
+## Documentation
+
+- [Authoring monitors](https://github.com/copperbox/railyard/blob/main/docs/authoring-monitors.md)
+- [`github.issue.*` payload contract](https://github.com/copperbox/railyard/blob/main/docs/contracts/github-issue-signals.md)
+  — the versioned, language-neutral payload spec.
