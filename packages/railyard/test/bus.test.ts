@@ -19,6 +19,12 @@ describe('stampSignal', () => {
     expect(sig.payload).toEqual({ n: 1 })
   })
 
+  it('stamps the Signal Contract version tag on every envelope', () => {
+    // Framework-set, never emitter-set (SPEC §2). The envelope schema pins it to
+    // `const: "v1"`, so a stamped signal always validates as the v1 contract.
+    expect(tick().contractVersion).toBe('v1')
+  })
+
   it('rejects a malformed type, naming the emitter', () => {
     expect(() => stampSignal(MONITOR, { type: 'not a type', payload: {} })).toThrow(
       /monitor "demo"/,

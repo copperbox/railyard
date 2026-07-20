@@ -41,6 +41,7 @@ A signal is a JSON document:
 ```jsonc
 {
   // Envelope — set by the framework, never by the emitter
+  "contractVersion": "v1",      // Signal Contract version tag (§15 M5); pinned to "v1"
   "id": "sig_...",              // unique per emission; the framework does NOT dedup
   "timestamp": "2026-07-19T...",
   "source": { "kind": "monitor" | "agent", "name": "github-issues" },
@@ -57,6 +58,14 @@ A signal is a JSON document:
   gets validated (via ajv internally).
 - Signals must be fully JSON-serializable — this is what makes out-of-process monitors a
   future *transport feature* rather than a redesign.
+- **`contractVersion`** is the framework-stamped Signal Contract version tag (the versioned
+  signal-contract surface of §15 M5). It is pinned to `"v1"` — the envelope JSON Schema
+  fixes it with `const`, so every stamped signal validates as exactly the contract this
+  runtime speaks. Additive changes (a new signal type, a prompt-grammar escape) do not bump
+  it: the tag versions the *envelope*, not the payloads. Cross-version negotiation — an
+  agent requiring a version, or a runtime deciding what to do with an unknown one — is a v2
+  concern, meaningful only once out-of-process transports can carry foreign signals (§14);
+  v1 has no such ingest path, so no non-`"v1"` value can arise. See `/docs/contracts`.
 
 ## 3. Routing
 

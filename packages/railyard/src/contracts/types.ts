@@ -34,6 +34,13 @@ export interface ProvenanceEntry {
 
 /** A signal on the bus: framework-set envelope + emitter-set type/payload (SPEC §2). */
 export interface SignalEnvelope {
+  /**
+   * Signal Contract version tag, framework-stamped (never emitter-set). Always
+   * `"v1"` in this runtime; the envelope JSON Schema pins it with `const`. The
+   * wire marker a future multi-version runtime negotiates on — cross-version
+   * policy is a v2 concern (SPEC §2, §14). See /docs/contracts.
+   */
+  contractVersion: string
   id: string
   timestamp: string
   source: SignalSource

@@ -4,9 +4,13 @@
   "title": "Signal envelope",
   "description": "A signal as it travels on the bus: framework-set envelope plus emitter-set type and payload. SPEC §2.",
   "type": "object",
-  "required": ["id", "timestamp", "source", "provenance", "type", "payload"],
+  "required": ["contractVersion", "id", "timestamp", "source", "provenance", "type", "payload"],
   "additionalProperties": false,
   "properties": {
+    "contractVersion": {
+      "description": "Signal Contract version tag, framework-stamped (never emitter-set). Pinned to the single version this runtime speaks; cross-version negotiation is a v2 concern. SPEC §2.",
+      "const": "v1"
+    },
     "id": {
       "type": "string",
       "description": "Unique per emission. The framework does not dedup.",

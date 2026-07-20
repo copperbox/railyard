@@ -4,6 +4,7 @@ import type { SignalEnvelope } from '../src/contracts/types.js'
 
 function envelope(payload: unknown): SignalEnvelope {
   return {
+    contractVersion: 'v1',
     id: 'sig_test',
     timestamp: '2026-07-19T00:00:00.000Z',
     source: { kind: 'monitor', name: 'github-issues' },

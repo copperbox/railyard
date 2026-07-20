@@ -18,6 +18,7 @@ export function stampSignal(
   provenance: ProvenanceEntry[] = [],
 ): SignalEnvelope {
   const envelope: SignalEnvelope = {
+    contractVersion: 'v1',
     id: newSignalId(),
     timestamp: new Date().toISOString(),
     source,

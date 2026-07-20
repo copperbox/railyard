@@ -1,6 +1,8 @@
 # Update Log
 
 ## 2026-07-20
+* Fix mis-targeted stampSignal link in "The decision" section.
+* Record M5-planning decision: wire-stamped envelope contractVersion "v1", framework-set, const-validated, forward-compat policy deferred to v2; packages at 1.0.0.
 * Updated M2 scaffold decision: ghcr publication dropped entirely (SPEC §14), not deferred; publish.sh removed; images are the user's to build.
 * Reframed image-mode: railyard publishes no images (SPEC §14, 2026-07-20) — the registry is always the user's own; dropped the "published image mode (M5)" framing.
 * M4 complete: user-zero dogfood shipped — github-review example, 3 real sonnet reviews ($0.166), two core public-API friction fixes, comment-posting second pass banked as issue #2.

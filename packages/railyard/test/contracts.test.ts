@@ -11,6 +11,7 @@ import type { AgentManifest } from '../src/contracts/types.js'
 
 function goodEnvelope() {
   return {
+    contractVersion: 'v1',
     id: newSignalId(),
     timestamp: new Date().toISOString(),
     source: { kind: 'monitor', name: 'github-issues' },
@@ -46,6 +47,8 @@ describe('signal envelope schema', () => {
     ['type with spaces', (e: any) => (e.type = 'github issue')],
     ['missing payload', (e: any) => delete e.payload],
     ['extra envelope key', (e: any) => (e.dedupKey = 'x')],
+    ['missing contractVersion', (e: any) => delete e.contractVersion],
+    ['unknown contractVersion', (e: any) => (e.contractVersion = 'v2')],
   ])('rejects %s', (_name, mutate) => {
     const env = goodEnvelope() as any
     mutate(env)
