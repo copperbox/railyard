@@ -1,12 +1,12 @@
 # M2 implementation plan — Claude Code scaffold
 
-> **Status: IMPLEMENTED (2026-07-19) — exit proof pending one keyed run.** All 8
-> steps shipped; 192 tests green without Docker (`pnpm test`), 205 with
-> (`pnpm test:docker`). The remaining box to tick is running `pnpm test:llm`
-> once with a real `ANTHROPIC_API_KEY` (none is available in the dev sandbox) —
-> the LLM suite is written, visibly skipped elsewhere, and fails loudly on
-> missing prerequisites. ghcr push: `publish.sh` ready, awaiting go-ahead
-> (build-only until then). Decisions table reflects what shipped.
+> **Status: COMPLETE (2026-07-20).** All steps shipped; 194 tests green without
+> Docker (`pnpm test`), 207 with (`pnpm test:docker`); the exit proof ran green
+> under `pnpm test:llm` (real Claude Code run, subscription OAuth auth).
+> One conscious deviation from SPEC §15's letter: **ghcr publication is
+> deferred to M5** (decision 18) — `publish.sh` and the dual-mode docs exist,
+> but no image is pushed until there are strangers to serve and CI to keep the
+> tag fresh. Decisions table reflects what shipped. Next: M3 (GitHub monitor).
 
 Goal (from SPEC §15): `scaffolds/claude-code` — a Dockerfile, an entrypoint helper
 (published to ghcr) adapting Claude Code headless mode to the container contract, and
@@ -283,3 +283,4 @@ Docker; `pnpm test:docker` green without an API key; M0/M1 public exports unchan
 | 15 | LLM e2e cost control | `claude-haiku-4-5` pinned, small `--max-turns`, `--max-budget-usd` cap, nonce-derivation assertion | Deterministic-enough assertion of real LLM work for well under $0.01/run |
 | 16 | ghcr layout | `ghcr.io/copperbox/railyard-claude-code:{<claude-code version>, latest}`, built from the scaffold Dockerfile, manual `publish.sh` | One Dockerfile serves copy-mode and `image:`-mode; version tag = the only thing that varies; CI publishing deferred to M5 — **no push without confirmation** |
 | 17 | Auth (added post-review, 2026-07-19) | Entrypoint accepts any one of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `ANTHROPIC_AUTH_TOKEN` — fails fast only when none is set; manifest declares whichever name applies | Claude Code resolves auth from env itself; secrets are names-only in the manifest, so subscription-token users just declare a different name — no framework change |
+| 18 | ghcr publication deferred to M5 (2026-07-20) | No push in M2; `publish.sh` + dual-mode README stay | Content-hash caching means publishing saves no rebuilds; its real value (zero-build `image:` onboarding for strangers) is M5's audience; an unautomated published image goes stale with every claude-code bump — worse than none. Conscious deviation from SPEC §15's "published to ghcr" wording |
