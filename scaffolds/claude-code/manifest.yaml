@@ -1,0 +1,6 @@
+# Copy-me example — rename the agent and point `on:` at your signal type(s).
+name: claude-code-agent
+secrets: [ANTHROPIC_API_KEY]
+on:
+  - type: demo.tick
+timeout: 900
