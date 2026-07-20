@@ -5,7 +5,7 @@ tags:
   - testing
   - docker
   - milestone-m0
-timestamp: 2026-07-20T03:19:30.127Z
+timestamp: 2026-07-20T06:07:06.439Z
 ---
 
 Integration tests that need a Docker daemon are gated by a two-layer mechanism
@@ -60,7 +60,19 @@ Never by hand — package scripts own it (`packages/railyard/package.json`):
   daemon **or** an unresolvable `ANTHROPIC_API_KEY` (checked via
   `EnvSecretsProvider`, so `.env` works) fails loudly in `beforeAll` instead of
   skipping.
+- **Fourth gate since M3**: `RAILYARD_GITHUB_TESTS=1` (`pnpm test:github`) in
+  `@copperbox/railyard-monitor-github` for read-only tests against the real
+  GitHub API (rate limit is the budget being protected, not money). Does **not**
+  imply Docker — monitors are host code. Once set, an unresolvable
+  `GITHUB_TOKEN` (via `EnvSecretsProvider`; `GITHUB_TOKEN=$(gh auth token)`
+  locally) fails loudly in `beforeAll`. These tests re-verify the monitor's
+  response-shape assumptions (newest-first ordering, id monotonicity, ETag 304)
+  against reality.
+- Root scripts fan out with `pnpm -r --workspace-concurrency=1` so the two
+  packages never run Docker suites simultaneously; packages lacking a script
+  are skipped by pnpm.
 - Fast path when needed: `RAILYARD_DOCKER_TESTS=1 pnpm exec vitest run runner.docker e2e.docker`.
 
 Related: [M0 design decisions](/decisions/m0-design-decisions.md),
-[M2 design decisions](/decisions/m2-design-decisions.md).
+[M2 design decisions](/decisions/m2-design-decisions.md),
+[M3 design decisions](/decisions/m3-design-decisions.md).

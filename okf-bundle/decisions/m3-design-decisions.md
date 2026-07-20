@@ -5,12 +5,13 @@ tags:
   - milestone-m3
   - contracts
   - github
-timestamp: 2026-07-20T05:50:10.899Z
+timestamp: 2026-07-20T06:07:51.332Z
 ---
 
 Decisions for M3 (`@copperbox/railyard-monitor-github`), confirmed with Dan at plan
-review (2026-07-19) before implementation. Full rationale in PLAN-M3.md's decisions
-table; implementation details land here as the milestone completes.
+review (2026-07-19) and shipped the same day. Full rationale in PLAN-M3.md's decisions
+table; the payload/dedup contract has
+[its own concept](/contracts/github-issue-signals.md).
 
 ## Polling mechanism & dedup (wire-adjacent contract)
 
@@ -53,13 +54,32 @@ compat makes identical bytes compatible by construction).
   ⇒ unauthenticated (60 req/h) with a loud start warning.
 - **Boot preflight**: `start()` probes each configured repo; 401/403/404 fails
   `orchestrator.start()` loudly (invariant 4).
-- **Monitor test seam goes in core's public API**: `createMonitorTestContext` +
-  `MemoryKvStore`, sharing the orchestrator's emit-validation code path — the first
-  invariant-9 friction M3 surfaced.
+- **Monitor test seam went into core's public API**: `createMonitorTestContext(emits)`
+  → `{ctx, emitted, logs, kv}` + `MemoryKvStore`, sharing the orchestrator's emit
+  validation via the factored `monitor/declared-emissions.ts` helpers — behavior
+  cannot drift. The first invariant-9 friction M3 surfaced; core's only M3 change.
 - **Fourth test gate**: `RAILYARD_GITHUB_TESTS=1` (`pnpm test:github`), token required
   via `EnvSecretsProvider` once opted in — same never-silently-skip posture as
   [docker-gated tests](/testing/docker-gated-tests.md).
 
+## Shipped implementation notes (deltas found while building)
+
+- **Payload `repo` identity comes from the preflight response**, not string-splitting
+  the configured `owner/name` — true `private` flag and html_url, GHE-correct.
+- **`issue.author` joined the nullable set** alongside `actor`, `issue.body`,
+  `label.color` (deleted "ghost" users null any login).
+- **Package dependency form**: core is a `peerDependency` and every import from it is
+  type-only — the published monitor has zero runtime deps; a unit test audits the
+  import graph (no `railyard/src` or `railyard/dist` deep imports, core imports must
+  be `import type`).
+- **API assumptions verified live** (and re-verified on every `test:github` run):
+  the events endpoint returns newest-first (descending ids) on page 1 — which the
+  baseline depends on — and ids are monotonic with created_at, which makes the id
+  cursor sound. Collection order never depends on it anyway (client sorts).
+- Rate-limit pause is **monitor-wide** (one token across repos); transient errors just
+  wait for the next interval (the interval is the backoff), cursor untouched.
+
 Related: [M0](/decisions/m0-design-decisions.md),
 [M1](/decisions/m1-design-decisions.md),
-[M2 design decisions](/decisions/m2-design-decisions.md).
+[M2 design decisions](/decisions/m2-design-decisions.md),
+[github.issue.* signal contract](/contracts/github-issue-signals.md).

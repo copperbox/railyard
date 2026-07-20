@@ -1,6 +1,9 @@
 # Update Log
 
 ## 2026-07-20
+* M3 complete: decisions updated with shipped implementation notes (preflight repo identity, nullable author, core test seam, verified API assumptions)
+* M3: recorded the github.issue.* payload contract, dedup/state semantics, and the schema-copy consumption story
+* M3: documented the fourth test gate (RAILYARD_GITHUB_TESTS) and multi-package fan-out behavior
 * M3 plan approved: recorded confirmed GitHub-monitor contract decisions (events-API dedup, four-type allowlist, comments out of scope, at-least-once)
 * **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
 * **Creation**: Created [image: refs resolve local-first — any registry works, mutable tags go stale](/docker/image-mode-resolution.md).

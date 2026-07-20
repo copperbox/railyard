@@ -14,6 +14,9 @@ provider, which prompts, which guardrails, what the agent actually does).
 ## Layout
 
 - `packages/railyard` — the core framework (`@copperbox/railyard`).
+- `packages/railyard-monitor-github` — first-party GitHub issues monitor
+  ([`@copperbox/railyard-monitor-github`](packages/railyard-monitor-github/README.md)),
+  built strictly against core's public API.
 - `scaffolds/` — copyable agent folders; start with
   [`scaffolds/claude-code`](scaffolds/claude-code/README.md) for a Claude Code agent.
 - `examples/demo` — a runnable end-to-end demo.
@@ -24,3 +27,5 @@ provider, which prompts, which guardrails, what the agent actually does).
 - `pnpm test:docker` — everything, including container integration tests.
 - `pnpm test:llm` — everything, plus tests that spend real API money
   (needs `ANTHROPIC_API_KEY`; prerequisites fail loudly, never skip silently).
+- `pnpm test:github` — everything, plus read-only tests against the real GitHub API
+  (needs `GITHUB_TOKEN`, e.g. `$(gh auth token)`; same fail-loudly posture).

@@ -1,6 +1,17 @@
 # M3 implementation plan — GitHub monitor
 
-> **Status: IN PROGRESS (approved by Dan, 2026-07-19).**
+> **Status: COMPLETE (2026-07-19).** All steps shipped: 259 tests green without
+> Docker across the workspace (`pnpm test`: 203 core + 56 monitor), 273 with
+> Docker (`pnpm test:docker`: 216 + 57), and 7 more real-API tests under
+> `pnpm test:github` (verified live: preflight, newest-first ordering, id
+> monotonicity, label shape, ETag 304, real baseline). The exit proof runs a
+> stub-fetch monitor through the real orchestrator into a real container via
+> the `needs-review` filter. Core gained `createMonitorTestContext` +
+> `MemoryKvStore` (the invariant-9 friction fix); every other core surface is
+> untouched. One shape refinement during implementation: `issue.author` joined
+> the nullable set (ghost users), and payload `repo` identity comes from the
+> boot preflight's API response (true `private` flag and urls, GHE-correct)
+> rather than string-splitting the config. Next: M4 (user-zero dogfood).
 
 Goal (from SPEC §15): `@copperbox/railyard-monitor-github` — polls GitHub issues, uses
 `ctx.state` for cursors, owns its dedup semantics, emits `github.issue.*` signals with
