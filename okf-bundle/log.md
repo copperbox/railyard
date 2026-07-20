@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-07-20
+* M4 complete: user-zero dogfood shipped — github-review example, 3 real sonnet reviews ($0.166), two core public-API friction fixes, comment-posting second pass banked as issue #2.
 * M3 complete: decisions updated with shipped implementation notes (preflight repo identity, nullable author, core test seam, verified API assumptions)
 * M3: recorded the github.issue.* payload contract, dedup/state semantics, and the schema-copy consumption story
 * M3: documented the fourth test gate (RAILYARD_GITHUB_TESTS) and multi-package fan-out behavior

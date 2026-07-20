@@ -19,7 +19,12 @@ provider, which prompts, which guardrails, what the agent actually does).
   built strictly against core's public API.
 - `scaffolds/` — copyable agent folders; start with
   [`scaffolds/claude-code`](scaffolds/claude-code/README.md) for a Claude Code agent.
-- `examples/demo` — a runnable end-to-end demo.
+- `examples/demo` — a runnable end-to-end demo (interval monitor → no-op agent).
+- `examples/github-review` — the user-zero workflow
+  ([README](examples/github-review/README.md)): a `needs-review` label on a
+  `copperbox/railyard` issue spawns a Claude Code agent that writes a triage review
+  into the run record. The container declares Claude auth as its *only* secret — the
+  signal payload is the whole input, so the agent gets zero GitHub access.
 
 ## Tests
 

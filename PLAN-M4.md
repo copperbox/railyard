@@ -1,8 +1,38 @@
 # M4 implementation plan — user-zero dogfood
 
-> **Status: APPROVED (Dan, 2026-07-19) — implementation not started.**
-> Retargeted from `dantheuber/jeeves` to `copperbox/railyard` at approval:
-> the framework reviews issues about itself.
+> **Status: COMPLETE (2026-07-20).** SPEC §15's M4 sentence is demonstrably true on
+> `copperbox/railyard`: three real issues labeled `needs-review` each spawned a Claude
+> Code container that wrote a genuinely useful triage review into its run record — no
+> GitHub writes, Claude auth the container's only secret. Runs/-only first pass shipped;
+> the comment-posting second pass is **banked** (Dan, 2026-07-20) as filed issue
+> [#2](https://github.com/copperbox/railyard/issues/2), preserving the container's
+> zero-GitHub-access property. Friction log (`docs/m4-friction.md`) fully dispositioned:
+> two core public-API fixes with tests (`on()`/`off()` event-narrowing generics; the
+> `EnvSecretsProviderOptions.envFile` cwd docstring), two example/docs fixes, no
+> framework surface invented that the dogfood didn't demand. 204 unit / 274 docker green.
+> Retargeted from `dantheuber/jeeves` to `copperbox/railyard` at approval.
+>
+> **Evidence — the real run (2026-07-20T06:56Z, `examples/github-review`):**
+>
+> ```
+> signal.received github.issue.labeled  (monitor:github-issues, provenanceDepth 0)
+> run.started    issue-reviewer  #1
+> signal.received github.issue.labeled                        ← #3, one poll later
+> run.queued     issue-reviewer  queueDepth 1                 ← concurrency cap held
+> run.finished   issue-reviewer  #1  succeeded exit=0  18.25s
+> run.started    issue-reviewer  #3  (drained from queue in order)
+> run.finished   issue-reviewer  #3  succeeded exit=0  15.87s
+> run.finished   issue-reviewer  #2  succeeded exit=0  14.25s
+> ```
+>
+> Review excerpt (#3, the vague one-liner "no way to put a literal `{{` in prompt.md"):
+> the agent correctly flagged the report as incomplete-for-reproduction and asked the
+> five concrete unblocking questions (exact snippet, error output, version, existing
+> escape syntax, whole-file-vs-line failure), severity hedged to the maintainer.
+>
+> **Cost:** 3 reviews, 1 turn each, **$0.166 total** ($0.079 / $0.042 / $0.045) — well
+> under the `--max-budget-usd 0.50` cap and `CLAUDE_MAX_TURNS 8` limit. Model
+> `claude-sonnet-5`. Monitor cursor advanced 0 → 28198247642; clean SIGINT stop.
 
 Goal (from SPEC §15): the actual workflow — a label on a GitHub issue → a Claude Code
 agent reviews it. **Whatever friction this surfaces gets fixed in core's public API
@@ -120,8 +150,11 @@ explicitly-deferred-with-reason, and `pnpm test` / `test:docker` are green.
 - Capture evidence into this plan's status block: journal excerpt of the real run,
   the review (or an excerpt), cost figure from Claude's result.
 - Decision point with Dan: promote the second pass now (comment posting via a
-  write-scoped token, possibly label lifecycle) or bank it for later. Whatever is
-  decided gets recorded here.
+  write-scoped token, possibly label lifecycle) or bank it for later. **Decided
+  (2026-07-20): banked** as issue #2 — the runs/-only first pass proved the workflow,
+  and keeping the container's Claude-auth-only / zero-GitHub-access property is worth
+  more than posting reviews publicly today. The second pass is a conscious later
+  decision with its own write-scoped-token design, not a silent omission.
 - Brain: `/decisions/m4-design-decisions.md` (linked to M0–M3), update any concepts
   the friction fixes touched; root README mentions the example.
 
