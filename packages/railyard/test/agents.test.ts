@@ -184,6 +184,60 @@ describe('agent folder loading', () => {
     await expect(loadAgents(dir)).rejects.toThrow(message)
   })
 
+  it('loads and parses prompt.md when present', async () => {
+    const dir = await makeAgentsDir({
+      echo: {
+        manifest: MINIMAL.manifest,
+        files: { Dockerfile: 'FROM alpine\n', 'prompt.md': 'Tick {{payload.n}} from {{source.name}}\n' },
+      },
+    })
+    const { agents } = await loadAgents(dir)
+    expect(agents[0]!.promptTemplate).not.toBeNull()
+    expect(agents[0]!.promptTemplate!.segments).toContainEqual({
+      kind: 'placeholder',
+      path: ['payload', 'n'],
+      raw: '{{payload.n}}',
+    })
+  })
+
+  it('leaves promptTemplate null when the folder has no prompt.md', async () => {
+    const dir = await makeAgentsDir({ echo: MINIMAL })
+    const { agents } = await loadAgents(dir)
+    expect(agents[0]!.promptTemplate).toBeNull()
+  })
+
+  it('accepts image: plus prompt.md (no Dockerfile)', async () => {
+    const dir = await makeAgentsDir({
+      echo: {
+        manifest: 'name: echo\non:\n  - type: demo.tick\nimage: ghcr.io/x/y:1\n',
+        files: { 'prompt.md': 'Payload: {{payload}}\n' },
+      },
+    })
+    const { agents } = await loadAgents(dir)
+    expect(agents[0]!.imageSource).toEqual({ kind: 'image', ref: 'ghcr.io/x/y:1' })
+    expect(agents[0]!.promptTemplate).not.toBeNull()
+  })
+
+  it('fails boot on a malformed prompt.md, naming the file', async () => {
+    const dir = await makeAgentsDir({
+      echo: {
+        manifest: MINIMAL.manifest,
+        files: { Dockerfile: 'FROM alpine\n', 'prompt.md': 'oops {{payload.n\n' },
+      },
+    })
+    await expect(loadAgents(dir)).rejects.toThrow(/prompt\.md: malformed placeholder/)
+  })
+
+  it('rejects a secret named AGENT_PROMPT_FILE (now reserved)', async () => {
+    const dir = await makeAgentsDir({
+      echo: {
+        manifest: 'name: echo\nsecrets: [AGENT_PROMPT_FILE]\non:\n  - type: t\n',
+        files: { Dockerfile: 'FROM alpine\n' },
+      },
+    })
+    await expect(loadAgents(dir)).rejects.toThrow(/reserved container-contract env var/)
+  })
+
   it('fails on duplicate agent names across folders', async () => {
     const dir = await makeAgentsDir({
       'echo-a': { manifest: 'name: echo\non:\n  - type: t\n', files: { Dockerfile: 'FROM alpine\n' } },

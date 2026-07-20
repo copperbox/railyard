@@ -8,6 +8,7 @@ import {
   formatAjvErrors,
   validateAgentManifest,
 } from '../contracts/validate.js'
+import { parsePromptTemplate, type ParsedPromptTemplate } from '../prompt/template.js'
 import { parseFilter, type ParsedFilter } from './filter.js'
 
 export interface LoadedSubscription {
@@ -27,6 +28,11 @@ export interface LoadedAgent {
   manifest: AgentManifest
   subscriptions: LoadedSubscription[]
   imageSource: ImageSource
+  /**
+   * Parsed prompt.md, when the folder has one (SPEC §4). Rendered per spawn
+   * and mounted at $AGENT_PROMPT_FILE; null = promptless agent, no file, no var.
+   */
+  promptTemplate: ParsedPromptTemplate | null
 }
 
 export interface LoadAgentsResult {
@@ -137,7 +143,15 @@ export async function loadAgentFolder(dir: string): Promise<LoadedAgent> {
     subscriptions.push({ type: sub.type, filter, payloadSchema, payloadSchemaPath, validatePayload })
   }
 
-  return { name: manifest.name, dir, manifest, subscriptions, imageSource }
+  // prompt.md parses at boot so a malformed template fails loudly (invariant 4),
+  // for Dockerfile and image: agents alike — the template is host-side data.
+  const promptPath = path.join(dir, 'prompt.md')
+  let promptTemplate: ParsedPromptTemplate | null = null
+  if (await fileExists(promptPath)) {
+    promptTemplate = parsePromptTemplate(await readFile(promptPath, 'utf8'), promptPath)
+  }
+
+  return { name: manifest.name, dir, manifest, subscriptions, imageSource, promptTemplate }
 }
 
 async function fileExists(p: string): Promise<boolean> {

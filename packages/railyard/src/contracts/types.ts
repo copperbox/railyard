@@ -15,6 +15,7 @@ export const RESERVED_AGENT_ENV_VARS = [
   'AGENT_INPUT_FILE',
   'AGENT_OUTPUT_DIR',
   'AGENT_EVENTS_FILE',
+  'AGENT_PROMPT_FILE',
 ] as const
 
 export type SourceKind = 'monitor' | 'agent'
