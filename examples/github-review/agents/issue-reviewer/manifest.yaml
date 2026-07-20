@@ -1,0 +1,16 @@
+# M4 user-zero agent: triage-reviews a copperbox/railyard issue when the
+# needs-review label is applied. First pass is runs/-only: the review lands in
+# the run record; the agent performs no GitHub writes of any kind.
+name: issue-reviewer
+# Claude auth is the ONLY secret — deliberately no GITHUB_TOKEN. The signal
+# payload already carries everything the review reads, so the container gets
+# zero GitHub access (least privilege by construction, SPEC §8).
+secrets: [CLAUDE_CODE_OAUTH_TOKEN]
+on:
+  - type: github.issue.labeled
+    filter: '$.label.name == "needs-review"'
+    # Verbatim copy of @copperbox/railyard-monitor-github/schemas/
+    # github-issue-labeled.schema.json — compat is deep structural equality,
+    # so identical bytes are compatible by construction and any edit fails boot.
+    payloadSchema: ./issue-labeled.schema.json
+timeout: 900
