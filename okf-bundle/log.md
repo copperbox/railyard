@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-07-20
+* M3 plan approved: recorded confirmed GitHub-monitor contract decisions (events-API dedup, four-type allowlist, comments out of scope, at-least-once)
 * **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
 * **Creation**: Created [image: refs resolve local-first — any registry works, mutable tags go stale](/docker/image-mode-resolution.md).
 * **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
