@@ -30,6 +30,6 @@ WORKDIR /workspace
 ENV CLAUDE_MODEL=claude-sonnet-5
 ENV CLAUDE_MAX_TURNS=16
 # Extra CLI args, e.g. "--max-budget-usd 1.00 --allowedTools Bash,Read"
-ENV CLAUDE_EXTRA_ARGS=""
+ENV CLAUDE_EXTRA_ARGS="--effort min"
 
 ENTRYPOINT ["node", "/entrypoint.mjs"]

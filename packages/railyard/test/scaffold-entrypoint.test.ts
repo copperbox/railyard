@@ -146,7 +146,19 @@ describe('claude-code scaffold entrypoint (stubbed claude)', () => {
   })
 
   it.each([
-    ['missing ANTHROPIC_API_KEY', { ANTHROPIC_API_KEY: undefined }, /ANTHROPIC_API_KEY/],
+    ['CLAUDE_CODE_OAUTH_TOKEN (claude setup-token)', 'CLAUDE_CODE_OAUTH_TOKEN'],
+    ['ANTHROPIC_AUTH_TOKEN (gateway bearer)', 'ANTHROPIC_AUTH_TOKEN'],
+  ])('accepts %s in place of an API key', async (_name, varName) => {
+    const run = await runEntrypoint(
+      {},
+      { ANTHROPIC_API_KEY: undefined, [varName]: 'test-token-not-real' },
+    )
+    expect(run.exitCode).toBe(0)
+    expect(run.result).toEqual(HAPPY_RESULT)
+  })
+
+  it.each([
+    ['no auth env at all', { ANTHROPIC_API_KEY: undefined }, /no Claude auth found/],
     ['missing AGENT_PROMPT_FILE', { AGENT_PROMPT_FILE: undefined }, /AGENT_PROMPT_FILE/],
   ])('fails fast before spawning claude on %s', async (_name, overrides, pattern) => {
     const run = await runEntrypoint({}, overrides)

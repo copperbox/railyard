@@ -25,8 +25,17 @@ function fail(message) {
 
 const outputDir = process.env.AGENT_OUTPUT_DIR
 if (!outputDir) fail('AGENT_OUTPUT_DIR is not set — not running under the railyard container contract?')
-if (!process.env.ANTHROPIC_API_KEY) {
-  fail('ANTHROPIC_API_KEY is not set — declare it under `secrets:` in manifest.yaml')
+// Claude Code resolves auth from env on its own; this check only fails fast
+// when nothing usable is present. Declare exactly one in manifest secrets:
+// ANTHROPIC_API_KEY (API billing), CLAUDE_CODE_OAUTH_TOKEN (subscription token
+// from `claude setup-token`), or ANTHROPIC_AUTH_TOKEN (bearer for gateways).
+// With several set, the CLI's own precedence applies.
+const AUTH_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN']
+if (!AUTH_VARS.some((name) => process.env[name])) {
+  fail(
+    'no Claude auth found — declare ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, ' +
+      'or ANTHROPIC_AUTH_TOKEN under `secrets:` in manifest.yaml',
+  )
 }
 const promptFile = process.env.AGENT_PROMPT_FILE
 if (!promptFile) {

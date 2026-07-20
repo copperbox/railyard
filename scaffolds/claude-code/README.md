@@ -21,9 +21,23 @@ my-app/agents/my-reviewer/
   prompt.md
 ```
 
-Either way the manifest must declare `secrets: [ANTHROPIC_API_KEY]`, and the
-orchestrator's `SecretsProvider` must be able to resolve it (process env or
-`.env` by default). Boot fails loudly if it can't (SPEC §8).
+Either way the manifest must declare an auth secret the orchestrator's
+`SecretsProvider` can resolve (process env or `.env` by default) — boot fails
+loudly if it can't (SPEC §8).
+
+## Auth
+
+Declare exactly one of these under `secrets:` — Claude Code reads whichever is
+present from env, and the entrypoint fails fast only when none is set:
+
+| Secret | Use when |
+|---|---|
+| `ANTHROPIC_API_KEY` | Direct API billing (spend-capped keys recommended) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | A Claude subscription: mint a long-lived token with `claude setup-token` |
+| `ANTHROPIC_AUTH_TOKEN` | Bearer token for a gateway/proxy in front of the API |
+
+If several are set, the CLI's own precedence applies
+(`ANTHROPIC_AUTH_TOKEN` > `ANTHROPIC_API_KEY` > `CLAUDE_CODE_OAUTH_TOKEN`).
 
 ## prompt.md templating
 

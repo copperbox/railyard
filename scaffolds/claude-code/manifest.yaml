@@ -1,5 +1,8 @@
 # Copy-me example — rename the agent and point `on:` at your signal type(s).
 name: claude-code-agent
+# Auth: declare ONE of ANTHROPIC_API_KEY (API billing), CLAUDE_CODE_OAUTH_TOKEN
+# (subscription token from `claude setup-token`), or ANTHROPIC_AUTH_TOKEN
+# (bearer for gateways/proxies).
 secrets: [ANTHROPIC_API_KEY]
 on:
   - type: demo.tick
