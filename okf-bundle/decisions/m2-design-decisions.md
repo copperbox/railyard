@@ -6,7 +6,7 @@ tags:
   - contracts
   - docker
   - secrets
-timestamp: 2026-07-20T04:01:45.987Z
+timestamp: 2026-07-20T04:08:52.367Z
 ---
 
 Decisions made implementing M2 (Claude Code scaffold) that are not in SPEC.md and
@@ -48,10 +48,13 @@ ports. Full rationale in PLAN-M2.md's decisions table. The template grammar has
 - **Image is generic** (nothing agent-specific COPY'd), so one build serves both
   copy-the-folder mode and `image:` mode. **ghcr publication is deferred to M5**
   (conscious deviation from SPEC §15's "published to ghcr" wording): content-hash
-  caching means publishing saves no rebuilds; its real value — zero-build `image:`
-  onboarding — is for M5's stranger audience, and an unautomated published image
-  goes stale with every claude-code version bump. `publish.sh` (build-only unless
-  `--push`) and the dual-mode README stay; target layout remains
+  caching means publishing saves no rebuilds, and
+  [image: refs resolve local-first](/docker/image-mode-resolution.md) — a locally
+  built tag serves `image:` mode with no registry at all, so publication's only
+  unique value is cross-machine distribution for M5's stranger audience. An
+  unautomated published image would also go stale with every claude-code version
+  bump. `publish.sh` (build-only unless `--push`) and the dual-mode README stay;
+  target layout remains
   `ghcr.io/copperbox/railyard-claude-code:{<pinned claude-code version>, latest}`.
 - Base `node:22-bookworm-slim` (glibc keeps Claude Code's bundled ripgrep happy),
   exact-pinned `@anthropic-ai/claude-code` (unpinned would make content-hash image

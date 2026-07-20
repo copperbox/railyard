@@ -2,6 +2,8 @@
 
 ## 2026-07-20
 * **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
+* **Creation**: Created [image: refs resolve local-first — any registry works, mutable tags go stale](/docker/image-mode-resolution.md).
+* **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
 * **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
 * **Update**: Updated [Docker-gated tests (RAILYARD_DOCKER_TESTS)](/testing/docker-gated-tests.md).
 * **Update**: Updated [Agents should run as non-root — modeled in scaffolds, never enforced](/docker/non-root-agents.md).
