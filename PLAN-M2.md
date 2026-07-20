@@ -1,6 +1,12 @@
 # M2 implementation plan — Claude Code scaffold
 
-> **Status: DRAFT — awaiting review.** No code written yet.
+> **Status: IMPLEMENTED (2026-07-19) — exit proof pending one keyed run.** All 8
+> steps shipped; 192 tests green without Docker (`pnpm test`), 205 with
+> (`pnpm test:docker`). The remaining box to tick is running `pnpm test:llm`
+> once with a real `ANTHROPIC_API_KEY` (none is available in the dev sandbox) —
+> the LLM suite is written, visibly skipped elsewhere, and fails loudly on
+> missing prerequisites. ghcr push: `publish.sh` ready, awaiting go-ahead
+> (build-only until then). Decisions table reflects what shipped.
 
 Goal (from SPEC §15): `scaffolds/claude-code` — a Dockerfile, an entrypoint helper
 (published to ghcr) adapting Claude Code headless mode to the container contract, and
