@@ -12,6 +12,27 @@ export interface KeyValueStore {
   delete(key: string): Promise<void>
 }
 
+/**
+ * In-memory KeyValueStore: for monitor unit tests (createMonitorTestContext)
+ * and deliberately ephemeral monitors. Values round-trip through JSON on set so
+ * a non-serializable cursor fails here just as it would against the disk backend.
+ */
+export class MemoryKvStore implements KeyValueStore {
+  private readonly data = new Map<string, unknown>()
+
+  async get(key: string): Promise<unknown> {
+    return this.data.get(key)
+  }
+
+  async set(key: string, value: unknown): Promise<void> {
+    this.data.set(key, value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as unknown))
+  }
+
+  async delete(key: string): Promise<void> {
+    this.data.delete(key)
+  }
+}
+
 export class JsonFileKvStore implements KeyValueStore {
   private data: Record<string, unknown> | null = null
   private queue: Promise<void> = Promise.resolve()

@@ -12,8 +12,11 @@ import type {
   SignalEnvelope,
   SignalSource,
 } from './contracts/types.js'
-import { compilePayloadSchema, formatAjvErrors } from './contracts/validate.js'
 import { Journal, type JournaledEntry } from './journal/journal.js'
+import {
+  checkDraftAgainstDeclarations,
+  compileDeclaredEmissions,
+} from './monitor/declared-emissions.js'
 import { consoleLogger, type Logger, type Monitor, type MonitorContext } from './monitor/monitor.js'
 import { DockerExecutor, type AgentExecutor } from './run/executor.js'
 import { sweepRetention, type RetentionPolicy } from './run/retention.js'
@@ -125,20 +128,7 @@ export class Orchestrator {
     if (this.monitors.some((m) => m.monitor.name === monitor.name)) {
       throw new Error(`duplicate monitor name "${monitor.name}"`)
     }
-    const validators = new Map<string, ValidateFunction>()
-    for (const declaration of monitor.emits) {
-      if (validators.has(declaration.type)) {
-        throw new Error(`monitor "${monitor.name}" declares "${declaration.type}" twice`)
-      }
-      validators.set(
-        declaration.type,
-        compilePayloadSchema(
-          declaration.payloadSchema,
-          `monitor "${monitor.name}", type "${declaration.type}"`,
-        ),
-      )
-    }
-    this.monitors.push({ monitor, validators })
+    this.monitors.push({ monitor, validators: compileDeclaredEmissions(monitor.name, monitor.emits) })
   }
 
   on(event: JournaledEntry['event'], handler: (entry: JournaledEntry) => void): this {
@@ -297,14 +287,8 @@ export class Orchestrator {
       )
     }
     if (validators !== null) {
-      const validate = validators.get(draft.type)
-      if (!validate) {
-        fail(`${source.kind} "${source.name}" emitted undeclared signal type "${draft.type}"`)
-      } else if (!validate(draft.payload)) {
-        fail(
-          `${source.kind} "${source.name}" emitted "${draft.type}" with an invalid payload: ${formatAjvErrors(validate.errors)}`,
-        )
-      }
+      const declarationError = checkDraftAgainstDeclarations(source, draft, validators)
+      if (declarationError !== null) fail(declarationError)
     }
     let envelope: SignalEnvelope
     try {

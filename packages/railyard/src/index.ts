@@ -95,7 +95,12 @@ export {
   type Monitor,
   type MonitorContext,
 } from './monitor/monitor.js'
-export { JsonFileKvStore, type KeyValueStore } from './state/kv.js'
+export {
+  createMonitorTestContext,
+  type CapturedLogLine,
+  type MonitorTestContext,
+} from './monitor/test-context.js'
+export { JsonFileKvStore, MemoryKvStore, type KeyValueStore } from './state/kv.js'
 
 // The orchestrator (SPEC §1, §10)
 export { Orchestrator, type OrchestratorConfig } from './orchestrator.js'
