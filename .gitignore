@@ -7,3 +7,4 @@ dist/
 runs/
 *.tsbuildinfo
 examples/**/state/
+.env
