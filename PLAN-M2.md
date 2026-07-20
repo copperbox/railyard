@@ -7,6 +7,12 @@
 > deferred to M5** (decision 18) — `publish.sh` and the dual-mode docs exist,
 > but no image is pushed until there are strangers to serve and CI to keep the
 > tag fresh. Decisions table reflects what shipped. Next: M3 (GitHub monitor).
+>
+> **SUPERSEDED (2026-07-20, Dan): ghcr publication dropped entirely, not deferred.**
+> railyard publishes no helper/agent images at all — the scaffold ships as source and
+> the image is the user's to build (locally, or pushed to a registry they own). Step 7
+> and decision 18 below are kept as the historical record; `publish.sh` has been
+> removed and the policy is now SPEC §14 ("no framework-published agent/helper images").
 
 Goal (from SPEC §15): `scaffolds/claude-code` — a Dockerfile, an entrypoint helper
 (published to ghcr) adapting Claude Code headless mode to the container contract, and

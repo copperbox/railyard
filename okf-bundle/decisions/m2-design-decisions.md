@@ -6,7 +6,7 @@ tags:
   - contracts
   - docker
   - secrets
-timestamp: 2026-07-20T04:08:52.367Z
+timestamp: 2026-07-20T18:35:08.530Z
 ---
 
 Decisions made implementing M2 (Claude Code scaffold) that are not in SPEC.md and
@@ -29,8 +29,7 @@ ports. Full rationale in PLAN-M2.md's decisions table. The template grammar has
 ## Scaffold shape (`scaffolds/claude-code/`)
 
 - **In-repo folder, not an npm package**; zero core imports (invariant 9 trivially).
-  Contents: `Dockerfile`, `entrypoint.mjs`, `manifest.yaml`, `prompt.md`, `README.md`,
-  `publish.sh`.
+  Contents: `Dockerfile`, `entrypoint.mjs`, `manifest.yaml`, `prompt.md`, `README.md`.
 - **Helper is a zero-dep Node ESM script** (Node ships in the image for Claude Code
   anyway). It pipes the rendered prompt to `claude -p --output-format json` via
   **stdin** (no argv limits) and writes Claude's result object **verbatim** as
@@ -46,16 +45,14 @@ ports. Full rationale in PLAN-M2.md's decisions table. The template grammar has
   framework change was needed (secrets are names-only). The M2 exit proof ran green
   via subscription OAuth.
 - **Image is generic** (nothing agent-specific COPY'd), so one build serves both
-  copy-the-folder mode and `image:` mode. **ghcr publication is deferred to M5**
-  (conscious deviation from SPEC §15's "published to ghcr" wording): content-hash
-  caching means publishing saves no rebuilds, and
+  copy-the-folder mode and `image:` mode. **railyard publishes no image at all**
+  (SPEC §14, decided 2026-07-20 — supersedes M2's original "ghcr publication deferred
+  to M5"): content-hash caching means publishing saves no rebuilds, and
   [image: refs resolve local-first](/docker/image-mode-resolution.md) — a locally
-  built tag serves `image:` mode with no registry at all, so publication's only
-  unique value is cross-machine distribution for M5's stranger audience. An
-  unautomated published image would also go stale with every claude-code version
-  bump. `publish.sh` (build-only unless `--push`) and the dual-mode README stay;
-  target layout remains
-  `ghcr.io/copperbox/railyard-claude-code:{<pinned claude-code version>, latest}`.
+  built tag serves `image:` mode with no registry at all. Cross-machine distribution
+  is the user's own job: build this Dockerfile and push to a registry they own. The
+  old `publish.sh` (which targeted `ghcr.io/copperbox/railyard-claude-code`) was
+  removed; the README documents build-your-own instead.
 - Base `node:22-bookworm-slim` (glibc keeps Claude Code's bundled ripgrep happy),
   exact-pinned `@anthropic-ai/claude-code` (unpinned would make content-hash image
   tags lie), `--dangerously-skip-permissions` always on (the container is the

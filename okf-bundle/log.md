@@ -1,6 +1,8 @@
 # Update Log
 
 ## 2026-07-20
+* Updated M2 scaffold decision: ghcr publication dropped entirely (SPEC §14), not deferred; publish.sh removed; images are the user's to build.
+* Reframed image-mode: railyard publishes no images (SPEC §14, 2026-07-20) — the registry is always the user's own; dropped the "published image mode (M5)" framing.
 * M4 complete: user-zero dogfood shipped — github-review example, 3 real sonnet reviews ($0.166), two core public-API friction fixes, comment-posting second pass banked as issue #2.
 * M3 complete: decisions updated with shipped implementation notes (preflight repo identity, nullable author, core test seam, verified API assumptions)
 * M3: recorded the github.issue.* payload contract, dedup/state semantics, and the schema-copy consumption story

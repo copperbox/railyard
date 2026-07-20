@@ -29,7 +29,7 @@ provider, which prompts, which guardrails, what the agent actually does).
 | **Monitor** | Code that watches something and emits signals | TypeScript, implements the `Monitor` interface |
 | **Agent** | A declarative definition of a containerized worker | A folder of data files (YAML/MD/Dockerfile) — never code executed on the host |
 | **Orchestrator** | Single in-process layer: validates, routes, spawns, journals | Framework-provided (`@copperbox/railyard`) |
-| **Scaffold** | A copyable example agent folder + optional helper image for a given provider | Files in this repo + images on ghcr |
+| **Scaffold** | A copyable example agent folder for a given provider | Files in this repo |
 
 Monitors know nothing about agents. Agents know nothing about monitors. The **signal
 contract** is the only coupling between them.
@@ -261,8 +261,7 @@ Monorepo at `github.com/copperbox/railyard`:
 |---|---|
 | `@copperbox/railyard` | Core: orchestrator, signal bus + `SignalTransport`, contracts, docker runner, journal. Zero opinions about providers. |
 | `@copperbox/railyard-monitor-github` | First-party GitHub monitor — deliberately built **through the public API only** (if it needs something core doesn't export, real users are blocked too). |
-| `scaffolds/` (in-repo) | Copyable example agent folders, starting with `claude-code` (Dockerfile + manifest + prompt.md honoring the container contract). |
-| ghcr images | Optional helpers, e.g. an entrypoint that adapts Claude Code headless mode to the events-file/result contract. |
+| `scaffolds/` (in-repo) | Copyable example agent folders, starting with `claude-code` (Dockerfile + manifest + prompt.md honoring the container contract). The image is the user's to build — locally (copy mode or a local `image:` tag) or published to a registry they own. |
 
 npm forces lowercase; the *rAIlyard* stylization lives in branding (README/logo/docs) only.
 
@@ -276,6 +275,9 @@ npm forces lowercase; the *rAIlyard* stylization lives in branding (README/logo/
 - No egress allowlisting, no framework-managed secret vault, no scheduling helpers,
   no framework-level signal dedup, no bundled observability stack.
 - No programmable (code) filters — the declarative JSONPath ceiling is intentional.
+- No framework-published agent/helper images. Scaffolds ship as source; the image is
+  the user's to build — locally, or published to a registry they own and reference via
+  `image:`. railyard never operates a registry or ships prebuilt images to run.
 
 ## 15. Milestones
 
@@ -296,8 +298,8 @@ retention sweep. The skeleton agent grows a test that emits a signal triggering 
 agent, proving agent-chaining and its guards.
 
 **M2 — Claude Code scaffold.** `scaffolds/claude-code`: Dockerfile, entrypoint helper
-(published to ghcr) adapting Claude Code headless mode to the contract, prompt.md
-templating from payload. Proven by a real agent doing real (if small) LLM work end-to-end.
+adapting Claude Code headless mode to the contract, prompt.md templating from payload.
+Proven by a real agent doing real (if small) LLM work end-to-end.
 
 **M3 — GitHub monitor.** `@copperbox/railyard-monitor-github`: polls issues, uses
 `ctx.state` for cursors, owns its dedup semantics, emits `github.issue.*` signals with
