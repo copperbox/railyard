@@ -7,7 +7,7 @@ tags:
   - milestone-m1
   - milestone-m2
   - milestone-m5
-timestamp: 2026-07-20T01:48:20.970Z
+timestamp: 2026-07-20T03:19:15.253Z
 ---
 
 Direction agreed during M1 (2026-07-19):
@@ -32,12 +32,16 @@ Where it lands:
   `RUN adduser -D -u 10001 agent` + `USER agent`. uid 10001 deliberately matches no
   host uid, so agent-written files stay host-unwritable and the temp+rename
   redaction rewrite path stays under test.
-- **M2**: the `claude-code` scaffold Dockerfile models `USER` non-root with a
-  comment explaining why — scaffolds are copied, so this becomes de-facto practice.
+- **Done (M2, 2026-07-19)**: the `claude-code` scaffold Dockerfile models it
+  (`useradd -u 10001 -m agent` + `USER agent`) with the explanatory comment —
+  scaffolds are copied, so this becomes de-facto practice. It also turned out to be
+  functionally required, not just hygiene:
+  [Claude Code refuses `--dangerously-skip-permissions` as root](/docker/claude-code-refuses-root.md).
 - **M5**: the authoring-agents guide + container-contract reference get a
   best-practices section (non-root runtime user, alongside credential scoping).
 
 Because third-party images can never be controlled, the host-side defenses
 (chmod'd mounts, temp+rename rewrites) stay in place regardless.
 
-Related: [M1 design decisions](/decisions/m1-design-decisions.md).
+Related: [M1 design decisions](/decisions/m1-design-decisions.md),
+[M2 design decisions](/decisions/m2-design-decisions.md).

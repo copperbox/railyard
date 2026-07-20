@@ -1,6 +1,12 @@
 # Update Log
 
 ## 2026-07-20
+* **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
+* **Update**: Updated [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
+* **Update**: Updated [Docker-gated tests (RAILYARD_DOCKER_TESTS)](/testing/docker-gated-tests.md).
+* **Update**: Updated [Agents should run as non-root — modeled in scaffolds, never enforced](/docker/non-root-agents.md).
+* **Creation**: Created [M2 design decisions (Claude Code scaffold)](/decisions/m2-design-decisions.md).
+* **Creation**: Created [prompt.md template grammar ({{ dot.path }}) — a cross-port disk contract](/contracts/prompt-template-grammar.md).
 * **Creation**: Created [Claude Code refuses --dangerously-skip-permissions as root — USER agent is load-bearing](/docker/claude-code-refuses-root.md).
 * Non-root fixtures/demo agents shipped in M1; concept updated with the uid-10001 pattern
 * Recorded direction: non-root agent containers — modeled in M2 scaffold + M5 docs, never framework-enforced

@@ -5,7 +5,7 @@ tags:
   - testing
   - docker
   - milestone-m0
-timestamp: 2026-07-19T22:51:44.987Z
+timestamp: 2026-07-20T03:19:30.127Z
 ---
 
 Integration tests that need a Docker daemon are gated by a two-layer mechanism
@@ -50,10 +50,17 @@ Never by hand — package scripts own it (`packages/railyard/package.json`):
 
 ## Behavior summary
 
-- `pnpm test` → var unset → gated suites register as skipped; pure unit tests
+- `pnpm test` → vars unset → gated suites register as skipped; pure unit tests
   run with zero Docker dependency.
 - `pnpm test:docker` → runs the **entire** suite (unit + gated), not just the
   Docker tests — counts are additive (86 vs 91 as of M0).
+- **Third gate since M2**: `RAILYARD_LLM_TESTS=1` (`pnpm test:llm`, which also
+  sets the Docker var — LLM tests imply Docker) for tests that spend real API
+  money. Same two-layer posture: `describe.skipIf` when unset; once set, a down
+  daemon **or** an unresolvable `ANTHROPIC_API_KEY` (checked via
+  `EnvSecretsProvider`, so `.env` works) fails loudly in `beforeAll` instead of
+  skipping.
 - Fast path when needed: `RAILYARD_DOCKER_TESTS=1 pnpm exec vitest run runner.docker e2e.docker`.
 
-Related: [M0 design decisions](/decisions/m0-design-decisions.md).
+Related: [M0 design decisions](/decisions/m0-design-decisions.md),
+[M2 design decisions](/decisions/m2-design-decisions.md).
