@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.copperbox.dev/railyard/journal-line.schema.json",
+  "title": "Journal line",
+  "description": "One line of runs/journal.jsonl (SPEC §12): the append-only index of every signal received and every run started/finished, plus safeguard outcomes (M1). A language-neutral disk contract; `at` is stamped by the journal at append time.",
+  "oneOf": [
+    { "$ref": "#/$defs/signalReceived" },
+    { "$ref": "#/$defs/signalDropped" },
+    { "$ref": "#/$defs/runStarted" },
+    { "$ref": "#/$defs/runFinished" },
+    { "$ref": "#/$defs/runQueued" },
+    { "$ref": "#/$defs/runSkipped" },
+    { "$ref": "#/$defs/retentionSwept" },
+    { "$ref": "#/$defs/note" }
+  ],
+  "$defs": {
+    "at": { "type": "string", "format": "date-time" },
+    "source": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["monitor", "agent"] },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "signalReceived": {
+      "type": "object",
+      "required": ["event", "at", "signalId", "signalType", "source", "provenanceDepth"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "signal.received" },
+        "at": { "$ref": "#/$defs/at" },
+        "signalId": { "type": "string" },
+        "signalType": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" },
+        "provenanceDepth": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "signalDropped": {
+      "type": "object",
+      "description": "An emission that never reached the bus: invalid payload, undeclared type, or beyond the provenance depth limit (SPEC §7). Never silent (invariant 10).",
+      "required": ["event", "at", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "signal.dropped" },
+        "at": { "$ref": "#/$defs/at" },
+        "reason": { "type": "string" },
+        "signalType": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    },
+    "runStarted": {
+      "type": "object",
+      "required": ["event", "at", "runId", "agent", "signalId"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "run.started" },
+        "at": { "$ref": "#/$defs/at" },
+        "runId": { "type": "string" },
+        "agent": { "type": "string" },
+        "signalId": { "type": "string" }
+      }
+    },
+    "runFinished": {
+      "type": "object",
+      "description": "status \"succeeded\"/\"failed\" mirror the run record; \"error\" means the framework could not complete the run (spawn failure, unresolvable spawn-time secret, prompt render failure). killReason present when the framework killed the run (SPEC §6).",
+      "required": ["event", "at", "runId", "agent", "signalId", "status", "exitCode", "durationMs"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "run.finished" },
+        "at": { "$ref": "#/$defs/at" },
+        "runId": { "type": "string" },
+        "agent": { "type": "string" },
+        "signalId": { "type": "string" },
+        "status": { "enum": ["succeeded", "failed", "error"] },
+        "exitCode": { "type": ["integer", "null"] },
+        "durationMs": { "type": ["number", "null"] },
+        "killReason": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    },
+    "runQueued": {
+      "type": "object",
+      "description": "A matched signal waiting because its agent is at the concurrency cap (SPEC §6).",
+      "required": ["event", "at", "agent", "signalId", "signalType", "queueDepth"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "run.queued" },
+        "at": { "$ref": "#/$defs/at" },
+        "agent": { "type": "string" },
+        "signalId": { "type": "string" },
+        "signalType": { "type": "string" },
+        "queueDepth": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "runSkipped": {
+      "type": "object",
+      "description": "A matched signal that will never run: self-trigger refusal (SPEC §7) or dropped at shutdown.",
+      "required": ["event", "at", "agent", "signalId", "signalType", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "run.skipped" },
+        "at": { "$ref": "#/$defs/at" },
+        "agent": { "type": "string" },
+        "signalId": { "type": "string" },
+        "signalType": { "type": "string" },
+        "reason": { "enum": ["self-trigger", "shutdown"] }
+      }
+    },
+    "retentionSwept": {
+      "type": "object",
+      "description": "A retention sweep pruned run directories (SPEC §12); sweeps that removed nothing are not journaled.",
+      "required": ["event", "at", "removed"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "retention.swept" },
+        "at": { "$ref": "#/$defs/at" },
+        "removed": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "note": {
+      "type": "object",
+      "required": ["event", "at", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "note" },
+        "at": { "$ref": "#/$defs/at" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

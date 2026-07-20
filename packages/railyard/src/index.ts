@@ -20,6 +20,7 @@ export {
   formatAjvErrors,
   validateAgentManifest,
   validateEventsLine,
+  validateJournalLine,
   validateSignalEnvelope,
 } from './contracts/validate.js'
 

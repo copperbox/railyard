@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-07-20
+* **Creation**: Created [Claude Code refuses --dangerously-skip-permissions as root — USER agent is load-bearing](/docker/claude-code-refuses-root.md).
 * Non-root fixtures/demo agents shipped in M1; concept updated with the uid-10001 pattern
 * Recorded direction: non-root agent containers — modeled in M2 scaffold + M5 docs, never framework-enforced
 * Recorded docker gotcha: container-written files are root-owned; temp+rename rewrite pattern

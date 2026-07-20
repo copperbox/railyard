@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { JsonSchema } from '../src/contracts/types.js'
+import { validateJournalLine } from '../src/contracts/validate.js'
 import type { Monitor } from '../src/monitor/monitor.js'
 import type { JournaledEntry } from '../src/journal/journal.js'
 import { Orchestrator } from '../src/orchestrator.js'
@@ -59,6 +60,10 @@ describe.skipIf(!DOCKER)('docker: end-to-end walking skeleton (SPEC §15 M0)', (
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as Record<string, unknown>)
+    // Every line of the real journal honors the published disk contract (M2).
+    for (const line of journal) {
+      expect(validateJournalLine(line), JSON.stringify(line)).toBe(true)
+    }
     // Boot notes (e.g. the retention-unset warning) may precede the run story.
     const events = journal.map((e) => e.event).filter((e) => e !== 'note')
     expect(events.slice(0, 2)).toEqual(['signal.received', 'run.started'])

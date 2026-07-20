@@ -11,3 +11,16 @@ folders — and runs each invocation as an ephemeral, sandboxed Docker container
 It is deliberately non-prescriptive: the framework owns the *contracts* (signal shape,
 routing, container I/O, lifecycle safeguards) and stays out of the *content* (which
 provider, which prompts, which guardrails, what the agent actually does).
+## Layout
+
+- `packages/railyard` — the core framework (`@copperbox/railyard`).
+- `scaffolds/` — copyable agent folders; start with
+  [`scaffolds/claude-code`](scaffolds/claude-code/README.md) for a Claude Code agent.
+- `examples/demo` — a runnable end-to-end demo.
+
+## Tests
+
+- `pnpm test` — unit tests, no Docker needed.
+- `pnpm test:docker` — everything, including container integration tests.
+- `pnpm test:llm` — everything, plus tests that spend real API money
+  (needs `ANTHROPIC_API_KEY`; prerequisites fail loudly, never skip silently).

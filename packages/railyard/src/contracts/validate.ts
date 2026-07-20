@@ -2,7 +2,9 @@ import { Ajv2020, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.
 import addFormats from 'ajv-formats'
 import agentManifestSchema from '../../schemas/agent-manifest.schema.json'
 import eventsLineSchema from '../../schemas/events-line.schema.json'
+import journalLineSchema from '../../schemas/journal-line.schema.json'
 import signalEnvelopeSchema from '../../schemas/signal-envelope.schema.json'
+import type { JournaledEntry } from '../journal/journal.js'
 import type { AgentManifest, EventsLine, JsonSchema, SignalEnvelope } from './types.js'
 
 /**
@@ -21,6 +23,9 @@ export const validateAgentManifest: ValidateFunction<AgentManifest> =
 
 export const validateEventsLine: ValidateFunction<EventsLine> =
   ajv.compile<EventsLine>(eventsLineSchema)
+
+export const validateJournalLine: ValidateFunction<JournaledEntry> =
+  ajv.compile<JournaledEntry>(journalLineSchema)
 
 /**
  * Compile a user-supplied payload schema (a monitor's declared emission or an
