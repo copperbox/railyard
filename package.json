@@ -9,6 +9,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "test:docker": "pnpm -r --workspace-concurrency=1 test:docker",
-    "test:llm": "pnpm -r --workspace-concurrency=1 test:llm"
+    "test:llm": "pnpm -r --workspace-concurrency=1 test:llm",
+    "test:github": "pnpm -r --workspace-concurrency=1 test:github"
   }
 }
