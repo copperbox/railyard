@@ -13,13 +13,25 @@ cp -r scaffolds/claude-code my-app/agents/my-reviewer
 # then edit: manifest.yaml (name + on:), prompt.md, optionally the Dockerfile ENV knobs
 ```
 
-**Image mode** (no Dockerfile, no local build — uses the published helper image):
+**Image mode** (no Dockerfile in the agent folder — reference a prebuilt image):
+
+```
+docker build -t railyard-claude-code:local scaffolds/claude-code
+```
 
 ```
 my-app/agents/my-reviewer/
-  manifest.yaml   # image: ghcr.io/copperbox/railyard-claude-code:<tag>
+  manifest.yaml   # image: railyard-claude-code:local
   prompt.md
 ```
+
+Boot verifies `image:` refs against local Docker first and only pulls when
+absent, so a locally built tag needs no registry. One image can serve any
+number of prompt-only agent folders. Freshness is yours to manage: rebuild the
+tag yourself when you change the Dockerfile or bump the claude-code pin —
+unlike copy mode, there is no content-hash staleness detection.
+(`ghcr.io/copperbox/railyard-claude-code:<tag>` becomes the published
+alternative once M5 ships it — see `publish.sh`.)
 
 Either way the manifest must declare an auth secret the orchestrator's
 `SecretsProvider` can resolve (process env or `.env` by default) — boot fails
