@@ -23,6 +23,14 @@ export {
   validateSignalEnvelope,
 } from './contracts/validate.js'
 
+// Prompt templating (SPEC §4, §15 M2)
+export {
+  parsePromptTemplate,
+  renderPromptTemplate,
+  type ParsedPromptTemplate,
+  type TemplateSegment,
+} from './prompt/template.js'
+
 // Signal bus (SPEC §10)
 export { InMemoryTransport, type SignalHandler, type SignalTransport } from './bus/transport.js'
 export { stampSignal } from './bus/stamp.js'
