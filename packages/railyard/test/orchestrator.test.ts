@@ -219,6 +219,74 @@ describe('routing', () => {
   })
 })
 
+describe('prompt rendering (SPEC §4, M2)', () => {
+  it('renders prompt.md per spawn and hands it to the executor', async () => {
+    const { orchestrator, executor } = await setup({
+      echo: {
+        manifest: ECHO.manifest,
+        files: { 'prompt.md': 'Tick {{payload.n}} via {{type}} from {{source.name}}' },
+      },
+    })
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 7 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    expect(executor.calls[0]!.renderedPrompt).toBe('Tick 7 via demo.tick from ticker')
+    await orchestrator.stop()
+  })
+
+  it('passes no renderedPrompt for promptless agents', async () => {
+    const { orchestrator, executor } = await setup({ echo: ECHO })
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    expect(executor.calls[0]!.renderedPrompt).toBeUndefined()
+    await orchestrator.stop()
+  })
+
+  it('a missing template path fails the run — journaled, executor never invoked', async () => {
+    const { orchestrator, executor, entries } = await setup({
+      echo: {
+        manifest: ECHO.manifest,
+        files: { 'prompt.md': 'wants {{payload.missing.key}}' },
+      },
+    })
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 })
+    await vi.waitFor(() => {
+      const finished = entries.find((e) => e.event === 'run.finished')
+      expect(finished).toBeDefined()
+      expect(finished).toMatchObject({ status: 'error' })
+      expect(String((finished as { error?: string }).error)).toContain('{{payload.missing.key}}')
+    })
+    expect(executor.calls).toHaveLength(0)
+    await orchestrator.stop()
+  })
+
+  it('a failed render releases the concurrency slot for the next queued signal', async () => {
+    const { orchestrator, executor, entries } = await setup({
+      echo: {
+        manifest: ECHO.manifest,
+        files: { 'prompt.md': '{{payload.word}}' },
+      },
+    })
+    const monitor = tickerMonitor()
+    orchestrator.register(monitor)
+    await orchestrator.start()
+    monitor.emit({ n: 1 }) // no `word` — render fails
+    monitor.emit({ n: 2, word: 'ok' } as never)
+    await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    expect(executor.calls[0]!.renderedPrompt).toBe('ok')
+    expect(entries.filter((e) => e.event === 'run.finished')).toHaveLength(2)
+    await orchestrator.stop()
+  })
+})
+
 describe('agent-emitted signals (SPEC §7 chaining, M0 shape)', () => {
   it('re-enters the bus mid-run and triggers other agents with provenance', async () => {
     const { orchestrator, executor } = await setup({

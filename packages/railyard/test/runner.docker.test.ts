@@ -209,6 +209,44 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     expect(log).toContain('split across chunks maybe: [REDACTED:LEAK_SECRET] (no trailing newline)')
   })
 
+  it('mounts the rendered prompt read-only at $AGENT_PROMPT_FILE (M2)', async () => {
+    const promptAgent = await loadAgentFolder(path.join(import.meta.dirname, 'fixtures/prompt-agent'))
+    const promptImage = await ensureAgentImage(promptAgent)
+
+    const record = await runAgent({
+      agent: promptAgent,
+      imageRef: promptImage,
+      signal: tickSignal({ n: 7 }),
+      runsDir,
+      renderedPrompt: 'Tick 7 via demo.tick',
+      onEvent: () => {},
+    })
+    expect(record.status).toBe('succeeded')
+    // The fixture read the file in-container (and proved input/ is read-only).
+    expect(record.result).toEqual({ prompt: 'Tick 7 via demo.tick' })
+    const hostCopy = await readFile(
+      path.join(runsDir, record.runId, 'input', 'prompt.md'),
+      'utf8',
+    )
+    expect(hostCopy).toBe('Tick 7 via demo.tick')
+  })
+
+  it('sets no $AGENT_PROMPT_FILE when no prompt was rendered (M2)', async () => {
+    const promptAgent = await loadAgentFolder(path.join(import.meta.dirname, 'fixtures/prompt-agent'))
+    const promptImage = await ensureAgentImage(promptAgent)
+
+    const record = await runAgent({
+      agent: promptAgent,
+      imageRef: promptImage,
+      signal: tickSignal({ n: 7 }),
+      runsDir,
+      onEvent: () => {},
+    })
+    // The fixture exits 7 exactly when the var is absent.
+    expect(record.status).toBe('failed')
+    expect(record.exitCode).toBe(7)
+  })
+
   it('sweeps orphaned containers labeled with this runs root', async () => {
     await dockerOk(
       [

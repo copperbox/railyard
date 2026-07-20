@@ -17,6 +17,7 @@ import { Journal, type JournaledEntry } from './journal/journal.js'
 import { consoleLogger, type Logger, type Monitor, type MonitorContext } from './monitor/monitor.js'
 import { DockerExecutor, type AgentExecutor } from './run/executor.js'
 import { sweepRetention, type RetentionPolicy } from './run/retention.js'
+import { renderPromptTemplate } from './prompt/template.js'
 import { makeRunId } from './run/runner.js'
 import { EnvSecretsProvider, type SecretsProvider } from './secrets/provider.js'
 import { Redactor, REDACTION_MIN_LENGTH } from './secrets/redactor.js'
@@ -470,9 +471,19 @@ export class Orchestrator {
     ]
     const agentSource: SignalSource = { kind: 'agent', name: agent.name }
 
-    const run = this.resolveSecretsFor(agent)
-      .then((env) =>
+    const run = Promise.resolve()
+      .then(async () => {
+        // Render before secret resolution: a missing template path fails the
+        // run here — journaled below, no secrets touched, no container created.
+        const renderedPrompt = agent.promptTemplate
+          ? renderPromptTemplate(agent.promptTemplate, signal)
+          : undefined
+        const env = await this.resolveSecretsFor(agent)
+        return { renderedPrompt, env }
+      })
+      .then(({ renderedPrompt, env }) =>
         this.executor.execute({
+          ...(renderedPrompt !== undefined ? { renderedPrompt } : {}),
           agent,
           imageRef: this.imageRefs.get(agent.name)!,
           signal,

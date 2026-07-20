@@ -12,6 +12,7 @@ import { EventsTailer } from './events-tailer.js'
 export const CONTAINER_PATHS = {
   inputDir: '/railyard/input',
   inputFile: '/railyard/input/signal.json',
+  promptFile: '/railyard/input/prompt.md',
   outputDir: '/railyard/output',
   eventsFile: '/railyard/events.jsonl',
 } as const
@@ -62,6 +63,12 @@ export interface RunAgentParams {
    * output/result.json. Other agent-written output files are NOT rewritten.
    */
   redactor?: Redactor
+  /**
+   * The agent's prompt.md rendered against this signal (SPEC §4). Written to
+   * input/prompt.md and exposed as $AGENT_PROMPT_FILE; omitted for promptless
+   * agents — no file, no var.
+   */
+  renderedPrompt?: string
   /** Valid events-file lines, dispatched while the container is still running. */
   onEvent: (line: EventsLine) => void
   onMalformedEvent?: (raw: string, reason: string) => void
@@ -96,6 +103,13 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
   await chmod(eventsFile, 0o666)
   const redactor = params.redactor
   const redactJson = <T,>(value: T): T => (redactor ? redactor.redactJson(value) : value)
+  if (params.renderedPrompt !== undefined) {
+    // Belt-and-braces redaction: payloads are already redacted at emission.
+    await writeFile(
+      path.join(inputDir, 'prompt.md'),
+      redactor ? redactor.redactString(params.renderedPrompt) : params.renderedPrompt,
+    )
+  }
   await writeFile(
     path.join(runDir, 'invocation.json'),
     JSON.stringify(
@@ -118,6 +132,9 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
     '-e', `AGENT_OUTPUT_DIR=${CONTAINER_PATHS.outputDir}`,
     '-e', `AGENT_EVENTS_FILE=${CONTAINER_PATHS.eventsFile}`,
   ]
+  if (params.renderedPrompt !== undefined) {
+    createArgs.push('-e', `AGENT_PROMPT_FILE=${CONTAINER_PATHS.promptFile}`)
+  }
   if (agent.manifest.network === 'none') createArgs.push('--network', 'none')
   for (const name of Object.keys(params.env ?? {})) createArgs.push('-e', name)
   createArgs.push(imageRef)
