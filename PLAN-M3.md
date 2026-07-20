@@ -78,7 +78,7 @@ is permanent cross-port contract surface, so v1 only mints types something consu
 
 Notes: `issue` is a snapshot **at poll time**, not at event time (the events API embeds
 the current issue object; historical snapshots don't exist). Nullable: `issue.body`,
-`label.color`, `actor`. M4's filter is `$.label.name == "needs-review"` — expressible
+`label.color`, `actor`, and `issue.author` (deleted "ghost" users make any login null). M4's filter is `$.label.name == "needs-review"` — expressible
 in the existing filter grammar.
 
 **Published schema files** — the consumption story: four files in the package's
