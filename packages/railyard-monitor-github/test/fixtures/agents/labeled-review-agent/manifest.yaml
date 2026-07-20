@@ -1,0 +1,8 @@
+# The consumption story under test: issue-labeled.schema.json is a verbatim copy
+# of the package's published schemas/github-issue-labeled.schema.json — core's
+# deep-equality compatibility check passes because the bytes are identical.
+name: labeled-review-agent
+on:
+  - type: github.issue.labeled
+    filter: '$.label.name == "needs-review"'
+    payloadSchema: ./issue-labeled.schema.json

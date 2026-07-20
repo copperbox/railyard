@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.copperbox.dev/railyard-monitor-github/github-issue-labeled.schema.json",
+  "title": "github.issue.labeled payload",
+  "description": "Payload of a github.issue.labeled signal: a label was applied to an issue. Derived from GitHub's issue-events API; eventId is GitHub's event id and the monitor's dedup key. The issue object is a snapshot at poll time, not at event time.",
+  "type": "object",
+  "required": ["repo", "issue", "label", "actor", "eventId", "occurredAt"],
+  "additionalProperties": false,
+  "properties": {
+    "repo": { "$ref": "#/$defs/repo" },
+    "issue": { "$ref": "#/$defs/issue" },
+    "label": {
+      "type": "object",
+      "description": "The label this event applied. The events API label object carries name and color only.",
+      "required": ["name", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "color": {
+          "type": ["string", "null"],
+          "description": "Hex color without the leading '#', e.g. d73a4a."
+        }
+      }
+    },
+    "actor": { "$ref": "#/$defs/actor" },
+    "eventId": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "GitHub's issue-event id. The monitor emits each id at most once."
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The event's created_at."
+    }
+  },
+  "$defs": {
+    "repo": {
+      "type": "object",
+      "required": ["owner", "name", "fullName", "url", "private"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "fullName": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "description": "The repository's html_url." },
+        "private": { "type": "boolean" }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "description": "Snapshot of the issue at poll time.",
+      "required": [
+        "number",
+        "title",
+        "body",
+        "state",
+        "author",
+        "labels",
+        "assignees",
+        "url",
+        "apiUrl",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string" },
+        "body": { "type": ["string", "null"] },
+        "state": { "enum": ["open", "closed"] },
+        "author": {
+          "type": ["string", "null"],
+          "description": "Login of the issue author; null for deleted (ghost) users."
+        },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Current label names, filter-friendly."
+        },
+        "assignees": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Current assignee logins."
+        },
+        "url": { "type": "string", "description": "The issue's html_url." },
+        "apiUrl": { "type": "string", "description": "The issue's REST API url." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "actor": {
+      "type": ["string", "null"],
+      "description": "Login of the user who performed the event; null for deleted (ghost) users."
+    }
+  }
+}
