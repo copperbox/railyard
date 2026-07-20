@@ -1,5 +1,10 @@
 # Update Log
 
+## 2026-07-20
+* Non-root fixtures/demo agents shipped in M1; concept updated with the uid-10001 pattern
+* Recorded direction: non-root agent containers — modeled in M2 scaffold + M5 docs, never framework-enforced
+* Recorded docker gotcha: container-written files are root-owned; temp+rename rewrite pattern
+
 ## 2026-07-19
 * Linked redaction decision to the M1 design-decisions concept
 * M1 complete: recorded safeguards & secrets design decisions (journal events, guards, timeout, secrets, retention)
