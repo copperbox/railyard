@@ -5,6 +5,7 @@
  * runtime imports from core are type-only; this package ships zero runtime deps.
  */
 
+export { GitHubIssuesMonitor, type GitHubIssuesMonitorOptions } from './monitor.js'
 export {
   GITHUB_ISSUE_CLOSED_SCHEMA,
   GITHUB_ISSUE_LABELED_SCHEMA,
