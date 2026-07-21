@@ -70,6 +70,16 @@ cross-port contract surface is versioned. Almost no new framework surface — th
   error tests); **223 / 59** with Docker; typecheck clean. `test:github`/`test:llm` untouched
   by the changes (monitors emit drafts; the container reads the payload) — the docker e2e
   covers the full envelope→container→result round-trip with the new field.
+- **Published 2026-07-21** (Dan, local/manual with 2FA, no provenance as planned):
+  `@copperbox/railyard@1.0.0` and `@copperbox/railyard-monitor-github@1.0.0`, both
+  `PUT 200` to registry.npmjs.org with **public access**. (First-publish read-path
+  propagation to the npm CDN lagged the write by ~3 minutes — the `PUT 200` is the
+  authoritative confirmation.) Every commit is on `origin/main` (`cab0a69..3142c12`).
+- **Stranger smoke-test passed**: a clean `npm install @copperbox/railyard-monitor-github
+  @copperbox/railyard` in an empty project resolves both at 1.0.0 (peer dep deduped),
+  the monitor ships **zero runtime deps**, and public exports work — `Orchestrator`/
+  `GitHubIssuesMonitor` load, `stampSignal` stamps `contractVersion: "v1"`, the schema
+  `$id` resolves. The headline M5 promise (installable by a real stranger) is proven.
 
 ## Process notes
 

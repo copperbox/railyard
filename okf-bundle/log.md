@@ -1,6 +1,8 @@
 # Update Log
 
 ## 2026-07-21
+* Record the stranger smoke-test: clean npm install of both 1.0.0 packages, peer dep resolved, zero runtime deps, exports work.
+* Record the 1.0.0 publish (both packages, PUT 200 public) + push to origin/main.
 * Fix typo (coherue -> coherent).
 * Record M5 design decisions (hardening for strangers): Signal Contract v1 on the wire + versioned docs, five stranger docs + core README, error polish, packages at 1.0.0 publish-ready; PLAN files retired to the brain.
 
