@@ -11,6 +11,16 @@ folders — and runs each invocation as an ephemeral, sandboxed Docker container
 It is deliberately non-prescriptive: the framework owns the *contracts* (signal shape,
 routing, container I/O, lifecycle safeguards) and stays out of the *content* (which
 provider, which prompts, which guardrails, what the agent actually does).
+## Install
+
+```sh
+npm install @copperbox/railyard                  # core framework
+npm install @copperbox/railyard-monitor-github   # optional: first-party GitHub monitor
+```
+
+Requires Node ≥ 20 and a running Docker daemon. The monitor peer-depends on core — install
+both. New here? Start with [docs/getting-started.md](docs/getting-started.md).
+
 ## Layout
 
 - `packages/railyard` — the core framework (`@copperbox/railyard`).

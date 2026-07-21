@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-07-21
+* Fix typo (coherue -> coherent).
+* Record M5 design decisions (hardening for strangers): Signal Contract v1 on the wire + versioned docs, five stranger docs + core README, error polish, packages at 1.0.0 publish-ready; PLAN files retired to the brain.
+
 ## 2026-07-20
 * Fix mis-targeted stampSignal link in "The decision" section.
 * Record M5-planning decision: wire-stamped envelope contractVersion "v1", framework-set, const-validated, forward-compat policy deferred to v2; packages at 1.0.0.
