@@ -147,6 +147,11 @@ The full interface between orchestrator and whatever runs inside the container:
 
   The orchestrator tails this file during the run, so agent-emitted signals dispatch while
   the emitter is still running. Writable from any language (`echo >> $AGENT_EVENTS_FILE`).
+  **Append-only is a constraint on the agent, not just a description**: it is a single-file
+  bind mount, so replacing the inode (`>`, write-temp-then-`mv`) silently ends delivery,
+  and concurrent in-container writers can tear a line. The framework takes no lock — it
+  cannot, the writer is arbitrary — but a torn line is never fatal: the tailer buffers to
+  the last newline and reports the remains as malformed.
 
 **Guarantees given to the agent:** a fresh container every invocation (statelessness is
 contractual — persistence is the agent's job via its outputs); teardown always happens.
@@ -163,6 +168,15 @@ Non-negotiable framework features (defaults on, tunable, never silently absent):
    `timeout: null` to opt into an indefinite run.
 3. **Guaranteed teardown** — container and resources removed on success, failure, or
    timeout; logs captured before removal.
+4. **Exclusive owned directories** — `runsDir` and `stateDir` each have exactly one
+   running orchestrator, claimed at boot via a `.railyard.lock` in each and released at
+   `stop()`. A second orchestrator over either fails to boot rather than proceeding:
+   retention and orphan-container sweeps are scoped by runs directory and only exempt
+   *their own* active runs (so sharing one means deleting each other's live runs and
+   containers), and monitor cursors are cached in memory (so sharing a state directory
+   silently loses progress — note it defaults to a sibling of `runsDir`, making accidental
+   sharing easy). A lock whose owning pid is provably gone on the same host is taken over
+   automatically; one from another host is reported for a human to clear.
 
 ## 7. Agent-emitted signals, provenance, and runaway prevention
 
@@ -244,6 +258,9 @@ File-based run journal, no database, no bundled dashboard:
 
 ```
 runs/
+  .railyard.lock                    # single-owner claim on this directory (§6.4); pid +
+                                    # host + acquisition time. Removed at stop(). The
+                                    # sibling state/ dir carries one of its own.
   journal.jsonl                     # append-only index: every signal received, every run
                                     # started/finished. EXEMPT from retention pruning.
   2026-07-19T.../github-reviewer--a1b2c3/

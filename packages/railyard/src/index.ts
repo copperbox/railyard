@@ -75,6 +75,14 @@ export {
   type RunRecord,
 } from './run/runner.js'
 export { EventsTailer, type EventsTailerHandlers } from './run/events-tailer.js'
+export {
+  DirectoryLock,
+  LOCK_FILE_NAME,
+  RUNS_DIR_LOCK,
+  STATE_DIR_LOCK,
+  type DirectoryLockInfo,
+  type DirectoryLockOptions,
+} from './run/lock.js'
 
 // Secrets (SPEC §8)
 export {

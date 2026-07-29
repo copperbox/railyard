@@ -107,6 +107,7 @@ Every received signal and every run is journaled under `runs/` (SPEC §12):
 
 ```
 runs/
+  .railyard.lock                        # this directory's owner while the orchestrator runs
   journal.jsonl                         # append-only index (exempt from retention)
   <ts>--<agent>--<id>/
     invocation.json                     # the signal envelope, matched agent, image hash
@@ -118,6 +119,13 @@ runs/
 Observability is data you keep, not a stack you run. Subscribe to the same facts live via
 `orchestrator.on('run.finished', …)` (see [authoring monitors](./authoring-monitors.md)
 for the typed events).
+
+An orchestrator owns its `runsDir` and its `stateDir` — booting a second one against
+either fails with an error naming the holder. Run as many orchestrators as you like; give
+each its own pair. Watch the default: `stateDir` is a `state/` directory *beside*
+`runsDir`, so sibling runs directories share one state directory unless you say otherwise.
+See [directories an orchestrator
+owns](./container-contract.md#directories-an-orchestrator-owns).
 
 ## Next
 

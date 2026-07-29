@@ -5,6 +5,7 @@ CLAUDE.md
 node_modules/
 dist/
 runs/
+okf-bundle/.obsidian/
 *.tsbuildinfo
 examples/**/state/
 .env

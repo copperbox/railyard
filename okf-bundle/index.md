@@ -6,6 +6,7 @@ okf_version: "0.1"
 
 # Directories
 
+* [concurrency](concurrency/index.md)
 * [contracts](contracts/index.md)
 * [decisions](decisions/index.md)
 * [docker](docker/index.md)

@@ -19,6 +19,7 @@ import {
 } from './monitor/declared-emissions.js'
 import { consoleLogger, type Logger, type Monitor, type MonitorContext } from './monitor/monitor.js'
 import { DockerExecutor, type AgentExecutor } from './run/executor.js'
+import { DirectoryLock, RUNS_DIR_LOCK, STATE_DIR_LOCK } from './run/lock.js'
 import { sweepRetention, type RetentionPolicy } from './run/retention.js'
 import { renderPromptTemplate } from './prompt/template.js'
 import { makeRunId } from './run/runner.js'
@@ -89,6 +90,12 @@ export class Orchestrator {
   private readonly activeRuns = new Set<string>()
   private agents: LoadedAgent[] = []
   private phase: 'idle' | 'started' | 'stopped' = 'idle'
+  /**
+   * The directories this orchestrator owns outright, locked for its whole
+   * started lifetime; see DirectoryLock for why sharing either is unsafe.
+   * Released in reverse acquisition order.
+   */
+  private dirLocks: DirectoryLock[] = []
 
   constructor(config: OrchestratorConfig) {
     this.agentsDir = config.agentsDir
@@ -150,6 +157,45 @@ export class Orchestrator {
   /** Boot sequence per SPEC §10. */
   async start(): Promise<void> {
     if (this.phase !== 'idle') throw new Error('start() may only be called once')
+    // Claim both owned directories before anything touches them — in particular
+    // before the orphan-container and retention sweeps, which are destructive and
+    // scoped by runs directory. Two orchestrators sharing either directory destroy
+    // each other's work; see DirectoryLock.
+    try {
+      await this.lockOwnedDirectories()
+      await this.boot()
+    } catch (err) {
+      // Boot is fail-fast (invariant 4) — a failed boot must not strand a lock.
+      await this.releaseDirLocks()
+      throw err
+    }
+    this.phase = 'started'
+    this.logger.info(
+      `started: ${this.agents.length} agent(s), ${this.monitors.length} monitor(s), runs in ${this.runsDir}`,
+    )
+  }
+
+  /**
+   * Lock runsDir and stateDir. They are usually siblings, but a user may point
+   * both at one directory — then a single lock already covers it, and asking
+   * for a second would deadlock us against ourselves.
+   */
+  private async lockOwnedDirectories(): Promise<void> {
+    this.dirLocks.push(await DirectoryLock.acquire(this.runsDir, RUNS_DIR_LOCK))
+    if (path.resolve(this.stateDir) === path.resolve(this.runsDir)) return
+    this.dirLocks.push(await DirectoryLock.acquire(this.stateDir, STATE_DIR_LOCK))
+  }
+
+  private async releaseDirLocks(): Promise<void> {
+    for (const lock of this.dirLocks.reverse()) {
+      await lock.release().catch((err: unknown) => {
+        this.logger.warn(`failed to release lock ${lock.path}: ${String(err)}`)
+      })
+    }
+    this.dirLocks = []
+  }
+
+  private async boot(): Promise<void> {
     await this.journal.init()
 
     const swept = await this.executor.sweep(this.runsDir).catch((err: unknown) => {
@@ -223,10 +269,6 @@ export class Orchestrator {
     for (const registered of this.monitors) {
       await registered.monitor.start(this.contextFor(registered))
     }
-    this.phase = 'started'
-    this.logger.info(
-      `started: ${agents.length} agent(s), ${this.monitors.length} monitor(s), runs in ${this.runsDir}`,
-    )
   }
 
   /**
@@ -257,6 +299,8 @@ export class Orchestrator {
     }
     await this.transport.stop()
     await this.journal.flush()
+    // Released last: nothing may touch the owned directories after this point.
+    await this.releaseDirLocks()
     this.logger.info('stopped')
   }
 

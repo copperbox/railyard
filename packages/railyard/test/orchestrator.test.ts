@@ -798,6 +798,82 @@ describe('safeguards: retention (SPEC §12)', () => {
   })
 })
 
+describe('runs directory lock', () => {
+  /** A second orchestrator over the same runsDir would rm -rf the first's live runs. */
+  it('refuses to boot a second orchestrator over the same runsDir', async () => {
+    const first = await setup({ echo: ECHO })
+    await first.orchestrator.start()
+
+    const second = await setup({ echo: ECHO })
+    const shared = new Orchestrator({
+      agentsDir: path.join(second.root, 'agents'),
+      runsDir: path.join(first.root, 'runs'),
+      stateDir: path.join(second.root, 'state'),
+      executor: second.executor,
+      logger: silentLogger,
+    })
+    await expect(shared.start()).rejects.toThrow(/locked by another railyard orchestrator/)
+
+    await first.orchestrator.stop()
+    // Released on stop: the runsDir is reusable.
+    await expect(shared.start()).resolves.toBeUndefined()
+    await shared.stop()
+  })
+
+  /** Different runsDirs but one stateDir: monitor cursors would silently clobber. */
+  it('refuses to boot a second orchestrator sharing only the stateDir', async () => {
+    const first = await setup({ echo: ECHO })
+    await first.orchestrator.start()
+
+    const second = await setup({ echo: ECHO })
+    const shared = new Orchestrator({
+      agentsDir: path.join(second.root, 'agents'),
+      runsDir: path.join(second.root, 'runs'),
+      stateDir: path.join(first.root, 'state'),
+      executor: second.executor,
+      logger: silentLogger,
+    })
+    await expect(shared.start()).rejects.toThrow(/state directory .* is locked/)
+
+    await first.orchestrator.stop()
+    await expect(shared.start()).resolves.toBeUndefined()
+    await shared.stop()
+  })
+
+  /** stateDir defaults beside runsDir; pointing both at one dir must not self-deadlock. */
+  it('boots when runsDir and stateDir are the same directory', async () => {
+    const { root, executor } = await setup({ echo: ECHO })
+    const both = path.join(root, 'shared')
+    const orchestrator = new Orchestrator({
+      agentsDir: path.join(root, 'agents'),
+      runsDir: both,
+      stateDir: both,
+      executor,
+      logger: silentLogger,
+    })
+    await expect(orchestrator.start()).resolves.toBeUndefined()
+    await orchestrator.stop()
+  })
+
+  it('releases the lock when boot fails, so a fixed config can boot', async () => {
+    const { root, orchestrator, executor } = await setup({
+      echo: { manifest: `${ECHO.manifest}secrets:\n  - NOPE_MISSING_SECRET\n` },
+    })
+    await expect(orchestrator.start()).rejects.toThrow(/unresolvable secret/)
+
+    const retry = new Orchestrator({
+      agentsDir: path.join(root, 'agents'),
+      runsDir: path.join(root, 'runs'),
+      stateDir: path.join(root, 'state'),
+      executor,
+      logger: silentLogger,
+      secrets: { async resolve() { return 'value' } },
+    })
+    await expect(retry.start()).resolves.toBeUndefined()
+    await retry.stop()
+  })
+})
+
 describe('journal and lifecycle', () => {
   it('journals the complete story in order and mirrors it on the emitter', async () => {
     const { root, orchestrator, entries } = await setup({ echo: ECHO })

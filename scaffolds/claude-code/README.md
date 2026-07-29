@@ -107,6 +107,13 @@ echo '{"kind":"signal","type":"review.completed","payload":{"ok":true}}' >> "$AG
 (Self-triggering is refused unless the manifest sets `allowSelfTrigger: true`;
 chains are depth-limited. SPEC §7.)
 
+Use `>>`, never `>` — the events file is a single-file bind mount, and replacing
+it makes the host stop seeing your events with no error. If your prompt has
+Claude run parallel tools that each append, keep the lines small: concurrent
+appends over ~4 KiB can tear, and a torn `signal` line means the downstream
+agent never runs. Put bulk output in `result.json` and keep payloads short. See
+[writing safely](../../docs/container-contract.md#writing-safely-append-only-one-line-at-a-time).
+
 ## Credential scoping
 
 Anything inside the container can read its injected env — that's SPEC §8's
