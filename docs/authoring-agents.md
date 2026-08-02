@@ -105,5 +105,19 @@ the mounted signal, optionally emit events to the events file, write `result.jso
 signal success/failure via the process exit code. It is writable from any language
 (`echo >> "$AGENT_EVENTS_FILE"`), because agents are not required to be JavaScript.
 
+Two things about the events file are easy to get wrong, and both fail *quietly*:
+
+- **Append, never rewrite.** It is a single-file bind mount. `>` instead of `>>`, or a
+  write-temp-then-`mv`, replaces the inode and the host stops seeing your events entirely
+  — no error anywhere.
+- **Emit from one place.** If your agent fans out into parallel workers that each append,
+  concurrent writes over ~4 KiB can interleave and tear a line. A torn line is reported as
+  malformed and journaled, but the event in it is lost — including `signal` lines, so a
+  downstream agent silently never runs. Have workers return results and let one place
+  write the events; keep the bulk in `result.json` rather than in a large payload.
+
+The [container contract](./container-contract.md#writing-safely-append-only-one-line-at-a-time)
+has the details, including how to serialize writers if you genuinely need several.
+
 Related: [container contract](./container-contract.md), [credential
 scoping](./credential-scoping.md), [Signal Contract v1](./contracts/README.md).

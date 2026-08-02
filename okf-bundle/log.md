@@ -1,5 +1,13 @@
 # Update Log
 
+## 2026-07-27
+* Point the process-boundary consequence at both owned-directory locks
+* Extend the boot lock to stateDir; generalize RunsDirLock to DirectoryLock
+* Rename: the lock now covers stateDir as well as runsDir
+* Record the runsDir exclusive-lock decision and why sharing a runsDir destroys data
+* Record the two silent failure modes of $AGENT_EVENTS_FILE (inode replacement, concurrent appends)
+* Record the framework's file-write concurrency model (promise-queue serialization, no OS locks)
+
 ## 2026-07-21
 * Record the stranger smoke-test: clean npm install of both 1.0.0 packages, peer dep resolved, zero runtime deps, exports work.
 * Record the 1.0.0 publish (both packages, PUT 200 public) + push to origin/main.
