@@ -50,7 +50,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
-      - run: npm install -g npm@latest
+      # Pinned to a major: `@latest` silently rolled to npm 12 and broke the
+      # release (it changed `npm pack --json` output shape).
+      - run: npm install -g npm@12
 
       - uses: pnpm/action-setup@v4
 

@@ -12,9 +12,16 @@ import { describe, expect, it } from 'vitest'
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
 
+// `npm pack --json` reports one entry per packed package, but the envelope
+// changed shape in npm 12: <=11 emits an array, 12+ emits an object keyed by
+// package name. We pack a single package either way, so take the lone entry.
 function packedPaths(): string[] {
   const out = execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: pkgDir, encoding: 'utf8' })
-  return (JSON.parse(out)[0].files as { path: string }[]).map((f) => f.path)
+  const parsed = JSON.parse(out) as unknown
+  const entries = Array.isArray(parsed) ? parsed : Object.values(parsed as Record<string, unknown>)
+  const files = (entries[0] as { files?: { path: string }[] } | undefined)?.files
+  if (!files) throw new Error(`unexpected \`npm pack --json\` output: ${out.slice(0, 200)}`)
+  return files.map((f) => f.path)
 }
 
 const ALLOWED = /^(dist\/|schemas\/|package\.json$|README\.md$|LICENSE$)/
