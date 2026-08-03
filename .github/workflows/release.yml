@@ -3,8 +3,9 @@
 # provenance requires an OIDC publish from CI and cannot be produced locally.
 #
 # Trigger by pushing a tag like `railyard@1.2.3` or `monitor-github@1.2.3`, or
-# run manually and pass the package dir. Requires an NPM_TOKEN repo secret
-# (an npm automation token that can publish to the @copperbox scope).
+# run manually and pass the package dir. Auth is npm trusted publishing (OIDC) —
+# each package must have this repo + `.github/workflows/release.yml` registered
+# as a trusted publisher on npmjs.com. No NPM_TOKEN secret is used.
 name: release
 
 on:
@@ -48,14 +49,18 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      - run: npm install -g npm@latest
+
       - uses: pnpm/action-setup@v4
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r test # unit gates; run docker/github gates locally before tagging (RELEASING.md)
 
+      # No NODE_AUTH_TOKEN: auth comes from the OIDC trusted publisher configured
+      # on npmjs.com for this repo + workflow file. Provenance is implied, but
+      # the flag keeps it explicit.
       - name: Publish with provenance
         working-directory: ${{ steps.target.outputs.dir }}
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
