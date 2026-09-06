@@ -1,5 +1,8 @@
 # Update Log
 
+## 2026-09-06
+* Record why subscription matching became the exported pure routeSignal(), what a host inherits from it, and what it must still add (issue #5)
+
 ## 2026-07-27
 * Point the process-boundary consequence at both owned-directory locks
 * Extend the boot lock to stateDir; generalize RunsDirLock to DirectoryLock

@@ -10,3 +10,4 @@
 * [M5 design decisions (hardening for strangers)](m5-design-decisions.md)
 * [An orchestrator locks both directories it owns (runsDir, stateDir) at boot](owned-directory-locks.md)
 * [Redaction is literal value matching with a minimum length](redaction-literal-matching-min-length.md)
+* [Subscription matching is a pure, exported routeSignal() — the Orchestrator is one caller](route-signal-pure-function.md)

@@ -2,8 +2,8 @@ import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import type { ValidateFunction } from 'ajv/dist/2020.js'
 import { checkSubscriptionCompatibility, type DeclaredEmission } from './agents/compat.js'
-import { evaluateFilter } from './agents/filter.js'
 import { loadAgents, type LoadedAgent } from './agents/loader.js'
+import { exceedsMaxChainDepth, routeSignal } from './agents/route.js'
 import { stampSignal } from './bus/stamp.js'
 import { InMemoryTransport, type SignalTransport } from './bus/transport.js'
 import type {
@@ -335,7 +335,7 @@ export class Orchestrator {
       throw new Error(reason)
     }
     // Depth limit (SPEC §7): only agent emissions can hit this — monitor chains are empty.
-    if (provenance.length > this.maxChainDepth) {
+    if (exceedsMaxChainDepth(provenance, this.maxChainDepth)) {
       fail(
         `${source.kind} "${source.name}" emission "${draft.type}" dropped: provenance depth ${provenance.length} exceeds max chain depth ${this.maxChainDepth}`,
       )
@@ -354,7 +354,10 @@ export class Orchestrator {
     this.transport.publish(envelope)
   }
 
-  /** Route one signal: implicit fan-out to every matching agent (SPEC §3). */
+  /**
+   * Route one signal: implicit fan-out to every matching agent (SPEC §3). The
+   * matching itself is `routeSignal`; this journals the outcomes and dispatches.
+   */
   private route(signal: SignalEnvelope): void {
     this.record({
       event: 'signal.received',
@@ -363,49 +366,23 @@ export class Orchestrator {
       source: signal.source,
       provenanceDepth: signal.provenance.length,
     })
-    for (const agent of this.agents) {
-      // An agent fires at most once per signal, via its first matching subscription.
-      for (const sub of agent.subscriptions) {
-        if (sub.type !== signal.type) continue
-        if (sub.filter) {
-          let hit: boolean
-          try {
-            hit = evaluateFilter(sub.filter, signal.payload)
-          } catch (err) {
-            this.record({
-              event: 'note',
-              message: `agent "${agent.name}": filter error on signal ${signal.id}, not matched: ${String(err)}`,
-            })
-            continue
-          }
-          if (!hit) continue
-        }
-        if (sub.validatePayload && !sub.validatePayload(signal.payload)) {
-          // Reachable for agent-emitted types, which have no boot-time emitter schema.
-          this.record({
-            event: 'note',
-            message: `agent "${agent.name}": signal ${signal.id} (${signal.type}) failed its required payload schema, not matched`,
-          })
-          continue
-        }
-        // Self-trigger guard (SPEC §7): refusal is per-agent — the signal still
-        // reaches every other matching agent.
-        if (
-          signal.source.kind === 'agent' &&
-          signal.source.name === agent.name &&
-          !agent.manifest.allowSelfTrigger
-        ) {
+    for (const outcome of routeSignal(signal, this.agents)) {
+      switch (outcome.kind) {
+        case 'matched':
+          this.dispatch(outcome.agent, signal)
+          break
+        case 'skipped':
           this.record({
             event: 'run.skipped',
-            agent: agent.name,
+            agent: outcome.agent.name,
             signalId: signal.id,
             signalType: signal.type,
-            reason: 'self-trigger',
+            reason: outcome.reason,
           })
           break
-        }
-        this.dispatch(agent, signal)
-        break
+        case 'note':
+          this.record({ event: 'note', message: outcome.message })
+          break
       }
     }
   }

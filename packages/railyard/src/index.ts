@@ -46,6 +46,7 @@ export {
   type LoadedSubscription,
 } from './agents/loader.js'
 export { evaluateFilter, parseFilter, type ParsedFilter } from './agents/filter.js'
+export { exceedsMaxChainDepth, routeSignal, type RouteOutcome } from './agents/route.js'
 export {
   checkSubscriptionCompatibility,
   schemasCompatible,
