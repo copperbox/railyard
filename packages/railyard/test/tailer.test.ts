@@ -68,3 +68,87 @@ describe('EventsTailer', () => {
     expect(lines).toEqual([{ kind: 'log', message: 'no newline' }])
   })
 })
+
+describe('EventsTailer checkpoints and resume', () => {
+  it('reports a checkpoint after each batch, indexes lines, and resumes from a saved offset', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'railyard-tail-'))
+    const file = path.join(dir, 'events.jsonl')
+    await writeFile(file, '')
+    const seen: Array<{ index: number; line: EventsLine }> = []
+    const checkpoints: Array<{ offset: number; consumed: number }> = []
+    const first = new EventsTailer(
+      file,
+      {
+        onLine: (line, index) => {
+          seen.push({ index, line })
+        },
+        onMalformed: () => {},
+        onCheckpoint: (offset, consumed) => {
+          checkpoints.push({ offset, consumed })
+        },
+      },
+      { pollMs: 20 },
+    )
+    await first.start()
+    const l1 = '{"kind":"log","message":"one"}\n'
+    const l2 = '{"kind":"signal","type":"a.b","payload":1}\n'
+    await appendFile(file, l1 + l2 + '{"kind":"log","mes')
+    await vi.waitFor(() => expect(seen).toHaveLength(2))
+    expect(seen.map((s) => s.index)).toEqual([0, 1])
+    // The checkpoint excludes the buffered partial line.
+    const expectedOffset = Buffer.byteLength(l1 + l2)
+    expect(checkpoints.at(-1)).toEqual({ offset: expectedOffset, consumed: 2 })
+    // Detach: the unfinished write is not treated as final.
+    await first.stop({ final: false })
+    expect(seen).toHaveLength(2)
+    expect(first.checkpoint).toEqual({ offset: expectedOffset, consumed: 2 })
+
+    // A new tailer resumes from the checkpoint and sees the completed line, index 2.
+    const resumed: Array<{ index: number; line: EventsLine }> = []
+    const second = new EventsTailer(
+      file,
+      {
+        onLine: (line, index) => {
+          resumed.push({ index, line })
+        },
+        onMalformed: () => {},
+      },
+      { pollMs: 20, startOffset: expectedOffset, startIndex: 2 },
+    )
+    await second.start()
+    await appendFile(file, 'sage":"split"}\n')
+    await vi.waitFor(() => expect(resumed).toHaveLength(1))
+    expect(resumed[0]).toEqual({ index: 2, line: { kind: 'log', message: 'split' } })
+    await second.stop()
+  })
+
+  it('awaits an async onLine before advancing the checkpoint', async () => {
+    const { file, tailer } = await makeTailer()
+    await tailer.stop()
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const checkpoints: number[] = []
+    const slow = new EventsTailer(
+      file,
+      {
+        onLine: async () => {
+          await gate
+        },
+        onMalformed: () => {},
+        onCheckpoint: (offset) => {
+          checkpoints.push(offset)
+        },
+      },
+      { pollMs: 20 },
+    )
+    await slow.start()
+    await appendFile(file, '{"kind":"log","message":"held"}\n')
+    await new Promise((r) => setTimeout(r, 80))
+    expect(checkpoints).toEqual([])
+    release()
+    await vi.waitFor(() => expect(checkpoints).toHaveLength(1))
+    await slow.stop()
+  })
+})

@@ -32,6 +32,18 @@ export interface ProvenanceEntry {
   signalType: string
 }
 
+/**
+ * Optional application-supplied logical work identity (SPEC §6.6). Scoped per
+ * target agent by the framework: one (agent, key, attempt) runs at most once
+ * within the ledger's replay-retention window, whatever signal ids carry it.
+ * `attempt` (default 1) is how a deliberate retry is expressed; a new
+ * revision of the work is a new key.
+ */
+export interface WorkIdentity {
+  key: string
+  attempt?: number
+}
+
 /** A signal on the bus: framework-set envelope + emitter-set type/payload (SPEC §2). */
 export interface SignalEnvelope {
   /**
@@ -47,12 +59,15 @@ export interface SignalEnvelope {
   provenance: ProvenanceEntry[]
   type: string
   payload: unknown
+  /** Emitter-set logical work identity, carried through for duplicate suppression. */
+  work?: WorkIdentity
 }
 
 /** What an emitter hands the framework; the envelope is stamped by the orchestrator. */
 export interface SignalDraft {
   type: string
   payload: unknown
+  work?: WorkIdentity
 }
 
 /** A monitor's declaration of one signal type it emits (SPEC §9). */
@@ -86,6 +101,7 @@ export interface SignalEventLine {
   kind: 'signal'
   type: string
   payload: unknown
+  work?: WorkIdentity
 }
 
 /** A `kind: "log"` line in $AGENT_EVENTS_FILE (SPEC §5). */

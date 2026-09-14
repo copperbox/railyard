@@ -4,32 +4,70 @@
   "title": "Events-file line",
   "description": "One JSON line appended by the agent to $AGENT_EVENTS_FILE. SPEC §5.",
   "type": "object",
-  "required": ["kind"],
+  "required": [
+    "kind"
+  ],
   "oneOf": [
     {
       "type": "object",
-      "required": ["kind", "type", "payload"],
+      "required": [
+        "kind",
+        "type",
+        "payload"
+      ],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "signal" },
+        "kind": {
+          "const": "signal"
+        },
         "type": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
         },
-        "payload": {}
+        "payload": {},
+        "work": {
+          "type": "object",
+          "description": "Optional logical work identity for duplicate suppression, scoped per target agent by the framework (SPEC §6.6). The same (agent, key, attempt) runs at most once within the replay-retention window; attempt (default 1) expresses a deliberate retry; a new revision of the work is a new key.",
+          "required": [
+            "key"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
       }
     },
     {
       "type": "object",
-      "required": ["kind", "message"],
+      "required": [
+        "kind",
+        "message"
+      ],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "log" },
+        "kind": {
+          "const": "log"
+        },
         "level": {
           "description": "Treated as info when omitted.",
-          "enum": ["debug", "info", "warn", "error"]
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
         },
-        "message": { "type": "string" }
+        "message": {
+          "type": "string"
+        }
       }
     }
   ]

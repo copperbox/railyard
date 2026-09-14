@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { stampSignal } from '../src/bus/stamp.js'
+import { deterministicSignalId, stampSignal } from '../src/bus/stamp.js'
+import { validateSignalEnvelope } from '../src/contracts/validate.js'
 import { InMemoryTransport } from '../src/bus/transport.js'
 import type { SignalEnvelope } from '../src/contracts/types.js'
 
@@ -87,5 +88,37 @@ describe('InMemoryTransport', () => {
     await bus.stop()
     bus.publish(tick())
     expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+describe('work identity and deterministic ids (recovery contract)', () => {
+  it('stamps an emitter-set work identity onto the envelope, normalized', () => {
+    const env = stampSignal(
+      { kind: 'monitor', name: 'm' },
+      { type: 'demo.tick', payload: {}, work: { key: 'issue-1', attempt: 2 } },
+    )
+    expect(env.work).toEqual({ key: 'issue-1', attempt: 2 })
+    expect(validateSignalEnvelope(env)).toBe(true)
+    expect(
+      stampSignal({ kind: 'monitor', name: 'm' }, { type: 'demo.tick', payload: {} }).work,
+    ).toBeUndefined()
+  })
+
+  it('rejects an invalid work identity', () => {
+    expect(() =>
+      stampSignal(
+        { kind: 'monitor', name: 'm' },
+        { type: 'demo.tick', payload: {}, work: { key: '', attempt: 0 } },
+      ),
+    ).toThrow(/invalid signal/)
+  })
+
+  it('derives the same signal id for the same (runId, events index), and a valid one', () => {
+    const a = deterministicSignalId('2026-07-19T00-00-00.000Z--echo--aaaaaaaa', 3)
+    expect(a).toBe(deterministicSignalId('2026-07-19T00-00-00.000Z--echo--aaaaaaaa', 3))
+    expect(a).not.toBe(deterministicSignalId('2026-07-19T00-00-00.000Z--echo--aaaaaaaa', 4))
+    const env = stampSignal({ kind: 'agent', name: 'echo' }, { type: 'x.y', payload: null }, [], { id: a })
+    expect(env.id).toBe(a)
+    expect(validateSignalEnvelope(env)).toBe(true)
   })
 })
