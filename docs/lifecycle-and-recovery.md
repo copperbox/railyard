@@ -28,8 +28,10 @@ await orchestrator.stop({ mode: 'cancel' })    // stop everything now
 - **Repeated and concurrent calls share one completion.** The first mode wins; later
   callers (any mode) get the same promise and a warning if they asked for a different
   mode. Ownership of the directories is released exactly once, last, after every write has
-  landed and every supervisor has let go. A second `SIGTERM` can never make a detach exit
-  early or release the locks twice.
+  landed — including a monitor emission that arrives while stopping — and every supervisor
+  has let go. A second `SIGTERM` can never make a detach exit early or release the locks
+  twice. An emission made *after* `stop()` has completed is refused with an error to the
+  emitter: there is no owner left to make it durable.
 - **During boot**, `stop()` waits for `start()` to settle and then shuts down per its mode.
   If boot fails, `start()` rejects, the locks are already released, and `stop()` resolves
   with nothing to do; the same instance can `start()` again.
@@ -65,9 +67,10 @@ offset + line count), the watchdog pid, and, once finalized, the run record. It 
 holds a secret value.
 
 **Versions.** `lifecycle.json`, `ledger.json`, and queue entries each carry a version
-(`lifecycleVersion`, `ledgerVersion`, `queueVersion`, all `1`). A record from a newer
-railyard fails boot with a clear error before anything is swept or removed — containers
-and artifacts stay exactly as they were.
+(`lifecycleVersion`, `ledgerVersion`, `queueVersion`, all `1`). All three are read, and
+their versions checked, before anything is swept or removed: a record from a newer
+railyard (or an unreadable queue entry) fails boot with a clear error and containers and
+artifacts stay exactly as they were.
 
 - **Upgrade (1.x → 2.x):** drain the 1.x orchestrator (its `stop()`), then start 2.x.
   Run directories from 1.x have no `lifecycle.json`; they are treated as before (subject to
@@ -93,9 +96,10 @@ each run's container without touching it:
 | `started` (or `created`) | running | `reattached` — same run id, same container; events resume from the checkpoint; logs re-captured; the original deadline stays in force |
 | `created` | created, never started | `reattached` — started now; its deadline counts from this start |
 | `started` / `created` | exited | `finalized` — logs, events, result collected; `run.finished` follows |
-| `intent` / `created` | missing | `requeued` — recorded `run.finished` with status `interrupted`, and the **delivery** is queued again as a fresh run (nothing ever ran, so this is safe). Set `recovery.requeueUnstarted: false` to record only |
+| `exited` | missing | `finalized` — the exit was observed and recorded before the crash (between `docker rm` and `result.json`); the run is finalized from the record and the run directory: recorded exit code, the agent's `output/result.json`, the watchdog marker. Nothing is lost and nothing is retried |
+| `intent` / `created` | missing | `requeued` — recorded `run.finished` with status `interrupted`, and the **delivery** is queued again as a fresh run (nothing ever ran, so this is safe). Set `recovery.requeueUnstarted: false`, or remove the agent, to record only (`interrupted`, with the reason saying which) |
 | `started` | missing | `interrupted` — `run.finished` with status `interrupted`, `exitCode: null`, an explicit reason. **Never retried automatically**: the container ran for some time and its side effects are unknown. Retry deliberately with a new `work.attempt` |
-| `finalized` | (any) | the terminal `run.finished` is journaled once, by checking the journal itself |
+| `finalized` | (any) | no `run.recovered`: the terminal `run.finished` is journaled once if the journal does not already hold it, and the record is closed |
 
 Rules that hold throughout:
 
@@ -105,6 +109,14 @@ Rules that hold throughout:
 - **Unknown is not missing.** If the container backend cannot answer (Docker down,
   unparsable state), boot fails with an actionable error and changes nothing. Only a
   definite "no such container" counts as missing.
+- **A failed reattach is not a failed run.** If picking a run back up fails after it was
+  observed alive (its events file unreadable, a transient Docker error), the container is
+  left exactly as it is, its record stays detached, and the failure is journaled as a
+  `note` followed by `run.detached`; the next start tries again. Its concurrency slot is
+  released meanwhile.
+- **A child signal emitted during boot is admitted once.** A reattached run may write
+  events lines while images are still being prepared; those deliveries are accepted
+  durably and admitted with the restored queue, never twice.
 - **Uncertain evidence is kept.** An unreadable `lifecycle.json` is reported, protected
   from retention, and not recovered.
 - **Retention never removes** an active run, a run whose record is not `closed`, or one
@@ -163,7 +175,11 @@ Two identities are tracked in `ledger.json`:
    same id. Every routed id is remembered; a known id is not routed again (journaled as a
    `note`). A crash between consuming an events line and persisting its checkpoint
    therefore re-routes the line harmlessly. The checkpoint itself only advances after the
-   line's deliveries are durable, so nothing is lost either.
+   line's deliveries are durable, so nothing is lost either. The ids carried by a run are
+   kept for as long as that run is active or unclosed, however long that is; they expire
+   with the ledger window afterwards. If making a line's deliveries durable fails (disk
+   full), the line is retried from the last checkpoint on the next poll and the failure is
+   journaled once per streak — later lines are neither skipped nor duplicated.
 2. **Work identity** — application-supplied, optional, scoped per target agent:
 
    ```ts

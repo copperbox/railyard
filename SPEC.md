@@ -195,9 +195,11 @@ Non-negotiable framework features (defaults on, tunable, never silently absent):
    reconciles every unfinished record: reattaches to running containers (same run id,
    original image/inputs/deadline, concurrency restored first), finalizes exited ones,
    records missing ones `interrupted` (a never-started delivery is requeued by policy;
-   a started one is never retried automatically), and journals each once. Unknown backend
-   state or an unsupported record version fails boot without removing anything;
-   retention never touches an unfinished or unreadable record. Contract:
+   a started one is never retried automatically; one whose exit was already recorded is
+   finalized from the record), and journals each once. A reattach that fails leaves the
+   container and record untouched for the next start. Unknown backend state or an
+   unsupported record version — lifecycle, ledger, or queue — fails boot before any sweep,
+   without removing anything; retention never touches an unfinished or unreadable record. Contract:
    [docs/lifecycle-and-recovery.md](docs/lifecycle-and-recovery.md).
 6. **Delivery ledger and work identity** — `runs/ledger.json` remembers every routed
    signal id (agent emissions get deterministic ids from `(runId, events-line index)`),

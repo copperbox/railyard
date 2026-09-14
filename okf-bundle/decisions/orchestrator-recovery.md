@@ -38,11 +38,25 @@ of ownership. User-facing contract: `docs/lifecycle-and-recovery.md`; SPEC §6.5
 - **Recovery runs after locks and before anything destructive** — before retention, the
   orphan sweep, queue admission, and monitor start. The transport is subscribed *before*
   recovery so reattached runs can emit; launches wait for images (`canLaunch` requires
-  `imagesReady`), so early emissions queue durably instead of racing the build.
+  `imagesReady`), so early emissions queue durably instead of racing the build. The queue
+  directory is read *in* reconcile (so its version check precedes every sweep) and
+  admission dedupes against in-memory pending work, so an emission accepted during boot
+  is not admitted a second time when the restored queue is replayed.
 - **Retry policy is asymmetric and explicit.** A record whose container never started
   (`intent`/`created` + missing) is requeued as a fresh run — nothing ran, so it is safe.
   A `started` record with a missing container is `interrupted` and never auto-retried:
-  side effects are unknown; the application retries with a new `work.attempt`.
+  side effects are unknown; the application retries with a new `work.attempt`. An
+  `exited` record with a missing container (crash between `docker rm` and result.json)
+  is finalized from the record — the exit code and output are already on disk.
+- **A failed reattach never destroys.** `resumeRun` used to route errors through the
+  launch path's `abandon()` (`docker rm -f`); a resume failure now suspends (record left
+  detached) and the orchestrator journals a `note` + `run.detached`, so the next start
+  tries again. Rationale: the container was just observed alive; a supervisor's own
+  failure is not evidence about the run.
+- **One writer per run record.** `LifecycleWriter` serializes every lifecycle.json write
+  for a run (phase transitions and events checkpoints come from different timers), and
+  temp names are unique per write, so no stale snapshot or torn file can ever drop
+  `deadlineAt`/`watchdogPid` from a record that recovery will read.
 - **Terminal entries are journaled exactly once, by asking the journal.** A
   finalized-but-not-closed record makes boot scan `journal.jsonl` for its `run.finished`;
   the record's `closed` phase means "the terminal line is on disk". No second
@@ -52,7 +66,11 @@ of ownership. User-facing contract: `docs/lifecycle-and-recovery.md`; SPEC §6.5
   This is what makes an events-line replay idempotent without cross-file atomicity: the
   tailer awaits durable acceptance of each line's deliveries before advancing the
   checkpoint, and the ledger refuses an id it has seen. Routes are serialized in publish
-  order (acceptance became async; FIFO admission must not depend on I/O luck).
+  order (acceptance became async; FIFO admission must not depend on I/O luck) and tracked
+  as in-flight work, so a stop waits for a late monitor emission to land before releasing
+  the locks. Signal ids are tagged with the run that carried them and survive pruning
+  while that run is active. A rejected acceptance rewinds the tailer to the failing line
+  rather than poisoning its poll chain.
 - **Work identity is emitter-supplied, framework-scoped per agent.** `work: { key,
   attempt? }` on drafts/envelopes/events lines (additive schema change). Rules:
   queued/active/done-within-window ⇒ skipped with detail; payload conflict ⇒ still
