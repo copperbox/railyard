@@ -51,7 +51,7 @@ class FakeExecutor implements AgentExecutor {
   }
 
   async observe(): Promise<RunObservation> {
-    return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+    return { state: 'missing', exitCode: null, startedAt: null, finishedAt: null, secrets: {} }
   }
 
   async resume(): Promise<RunOutcome> {

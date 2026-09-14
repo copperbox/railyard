@@ -89,7 +89,7 @@ describe('real journal output validates line by line', () => {
         return { kind: 'finished', record }
       },
       async observe(): Promise<RunObservation> {
-        return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+        return { state: 'missing', exitCode: null, startedAt: null, finishedAt: null, secrets: {} }
       },
       async resume(): Promise<RunOutcome> {
         throw new Error('not used')

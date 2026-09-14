@@ -48,6 +48,12 @@ of ownership. User-facing contract: `docs/lifecycle-and-recovery.md`; SPEC §6.5
   side effects are unknown; the application retries with a new `work.attempt`. An
   `exited` record with a missing container (crash between `docker rm` and result.json)
   is finalized from the record — the exit code and output are already on disk.
+- **A started container with a `created` record keeps its original deadline.** The
+  crash window between `docker start` and the record's `started` transition used to
+  resume the run with no `deadlineAt` at all — no watchdog, no in-process timer. The
+  observation now carries the backend's `StartedAt`; resume records the start from it and
+  fixes the deadline from the original timeout (killing at once if it has already passed),
+  the same way a normal start would. Test: `runner-resume.test.ts` (fake `docker` on PATH).
 - **A failed reattach never destroys.** `resumeRun` used to route errors through the
   launch path's `abandon()` (`docker rm -f`); a resume failure now suspends (record left
   detached) and the orchestrator journals a `note` + `run.detached`, so the next start

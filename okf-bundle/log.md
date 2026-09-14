@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-09-14
+* Recovery crash window (issue #7 follow-up): a container started before its record said so is adopted with the deadline fixed from the backend's own start time; observation carries `startedAt`
 * Recovery hardening (issue #7 follow-up): boot-time admission dedupe, exited-record finalization, queue version check before sweeps, non-destructive failed reattach, serialized lifecycle writer, tracked late emissions, tailer rewind on rejected acceptance, run-tagged signal ids
 * Record the orchestrator recovery design (issue #7): detach/drain/cancel, lifecycle records, delivery ledger + work identity, deadline watchdog, executor observe/resume; railyard 2.0.0
 * M3 decisions: the emit-then-persist "recovery, not duplication" assumption no longer holds once runs survive restarts — the GitHub monitor now attaches a work identity per event id

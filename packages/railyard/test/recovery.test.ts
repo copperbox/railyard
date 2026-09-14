@@ -135,13 +135,14 @@ class SimulatedExecutor implements AgentExecutor {
   async observe(lc: RunLifecycleRecord): Promise<RunObservation> {
     if (this.backend.unavailable) throw new BackendUnavailableError('simulated daemon down')
     const c = this.backend.containers.get(lc.containerName)
-    if (!c) return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+    if (!c) return { state: 'missing', exitCode: null, startedAt: null, finishedAt: null, secrets: {} }
     this.backend.enforceDeadline(c)
     const secrets: Record<string, string> = {}
     for (const name of lc.secretNames) if (name in c.env) secrets[name] = c.env[name]!
     return {
       state: c.state,
       exitCode: c.exitCode,
+      startedAt: c.state === 'created' ? null : iso(),
       finishedAt: c.state === 'exited' ? iso() : null,
       secrets,
     }

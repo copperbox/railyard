@@ -109,6 +109,12 @@ export interface ResumeRunParams extends RunSupervisionHandlers {
 export interface RunObservation {
   state: 'missing' | 'created' | 'running' | 'exited'
   exitCode: number | null
+  /**
+   * When the backend started the container, if it has. A record still in
+   * phase `created` for a started container (the crash came between `docker
+   * start` and the record's `started` transition) takes its deadline from here.
+   */
+  startedAt: string | null
   finishedAt: string | null
   /**
    * The declared secrets exactly as the container holds them, so a resumed
@@ -245,9 +251,14 @@ export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
     if (observation.state === 'created') {
       await startContainer(ctx)
     } else if (observation.state === 'running') {
+      // Started before the record said so (crash between `docker start` and
+      // the `started` transition): the deadline counts from the backend's own
+      // start time, not from this adoption — the original timeout still holds.
+      if (ctx.lifecycle.startedAt === null) await markStarted(ctx, observedStart(observation))
       await ensureWatchdog(ctx)
     } else {
       // Exited during downtime: no supervision left to do, only collection.
+      if (ctx.lifecycle.startedAt === null) await markStarted(ctx, observedStart(observation))
       await docker(['logs', ctx.lifecycle.containerName], {
         onStdoutChunk: (chunk) => writeLogChunk(ctx, 'stdout', chunk),
         onStderrChunk: (chunk) => writeLogChunk(ctx, 'stderr', chunk),
@@ -285,12 +296,12 @@ export async function observeRun(lifecycle: RunLifecycleRecord): Promise<RunObse
   const res = await docker(['inspect', '--format', '{{json .}}', lifecycle.containerName])
   if (res.code !== 0) {
     if (/no such (object|container)/i.test(res.stderr)) {
-      return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+      return { state: 'missing', exitCode: null, startedAt: null, finishedAt: null, secrets: {} }
     }
     throw new BackendUnavailableError(res.stderr.trim() || `docker inspect exited ${res.code}`)
   }
   let parsed: {
-    State?: { Status?: string; ExitCode?: number; FinishedAt?: string }
+    State?: { Status?: string; ExitCode?: number; StartedAt?: string; FinishedAt?: string }
     Config?: { Env?: string[] }
   }
   try {
@@ -307,13 +318,24 @@ export async function observeRun(lifecycle: RunLifecycleRecord): Promise<RunObse
     const name = entry.slice(0, eq)
     if (wanted.has(name)) secrets[name] = entry.slice(eq + 1)
   }
-  const finishedAt = parsed.State?.FinishedAt ?? null
   return {
     state,
     exitCode: state === 'exited' ? (parsed.State?.ExitCode ?? -1) : null,
-    finishedAt: finishedAt !== null && !finishedAt.startsWith('0001-') ? finishedAt : null,
+    startedAt: state === 'created' ? null : dockerTimestamp(parsed.State?.StartedAt),
+    finishedAt: state === 'exited' ? dockerTimestamp(parsed.State?.FinishedAt) : null,
     secrets,
   }
+}
+
+/** Docker reports "never" as a year-0001 timestamp; treat that (and garbage) as unknown. */
+function dockerTimestamp(value: string | undefined): string | null {
+  if (value === undefined || value.startsWith('0001-') || Number.isNaN(Date.parse(value))) return null
+  return value
+}
+
+/** The backend's start time for an adopted run, or now if it cannot say. */
+function observedStart(observation: RunObservation): Date {
+  return observation.startedAt !== null ? new Date(observation.startedAt) : new Date()
 }
 
 /** Map Docker's container status onto the three states recovery distinguishes. */
@@ -469,7 +491,12 @@ function writeLogChunk(ctx: RunContext, which: 'stdout' | 'stderr', chunk: strin
 async function startContainer(ctx: RunContext): Promise<void> {
   const { runId, containerName } = ctx.lifecycle
   await dockerOk(['start', containerName], `run ${runId}`)
-  const startedAt = new Date()
+  await markStarted(ctx, new Date())
+  await ensureWatchdog(ctx)
+}
+
+/** Record the start and fix the absolute deadline from it (SPEC §6.2). */
+async function markStarted(ctx: RunContext, startedAt: Date): Promise<void> {
   const timeoutSeconds = ctx.lifecycle.timeoutSeconds
   const deadlineAt =
     timeoutSeconds === null ? null : new Date(startedAt.getTime() + timeoutSeconds * 1000)
@@ -478,7 +505,6 @@ async function startContainer(ctx: RunContext): Promise<void> {
     startedAt: startedAt.toISOString(),
     deadlineAt: deadlineAt?.toISOString() ?? null,
   })
-  if (deadlineAt !== null) await ensureWatchdog(ctx)
 }
 
 /** Spawn the deadline watchdog unless one of ours is already alive for this container. */

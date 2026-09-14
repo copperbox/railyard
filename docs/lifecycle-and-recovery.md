@@ -93,7 +93,8 @@ each run's container without touching it:
 
 | Record phase | Container | Outcome (journaled as `run.recovered`) |
 |---|---|---|
-| `started` (or `created`) | running | `reattached` — same run id, same container; events resume from the checkpoint; logs re-captured; the original deadline stays in force |
+| `started` | running | `reattached` — same run id, same container; events resume from the checkpoint; logs re-captured; the original deadline stays in force |
+| `created` | running | `reattached` — the crash came between `docker start` and the record's `started` transition; the record adopts the start time Docker reports, and the original timeout counts from *that*, not from adoption |
 | `created` | created, never started | `reattached` — started now; its deadline counts from this start |
 | `started` / `created` | exited | `finalized` — logs, events, result collected; `run.finished` follows |
 | `exited` | missing | `finalized` — the exit was observed and recorded before the crash (between `docker rm` and `result.json`); the run is finalized from the record and the run directory: recorded exit code, the agent's `output/result.json`, the watchdog marker. Nothing is lost and nothing is retried |
