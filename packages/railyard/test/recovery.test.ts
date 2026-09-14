@@ -602,6 +602,41 @@ describe('shutdown modes and repeated requests (SPEC §6.5)', () => {
     expect(a.of('run.skipped')).toHaveLength(0)
     expect(await new DurableQueue(h.runsDir).load()).toHaveLength(1)
   })
+
+  it('detach reaches a run whose launch is still resolving secrets: it detaches instead of being waited for', { timeout: 5000 }, async () => {
+    const h = await harness({ needy: { manifest: 'name: needy\nsecrets: [TOKEN]\non:\n  - type: demo.tick\n' } })
+    // Boot resolves immediately; the spawn-time resolution blocks until released,
+    // so stop() lands while the run is journaled started but has no container yet.
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    let calls = 0
+    const a = h.boot({
+      secrets: {
+        async resolve() {
+          calls += 1
+          if (calls > 1) await gate
+          return 'value-long-enough-1'
+        },
+      },
+    })
+    await a.orchestrator.start()
+    a.monitor.emit({ n: 1 })
+    const runId = await firstRunId(a)
+    expect(h.backend.runIds()).toEqual([])
+    const stopped = a.orchestrator.stop({ mode: 'detach' })
+    release()
+    await stopped
+    expect(a.of('run.detached').map((e) => e.runId)).toEqual([runId])
+    expect(a.of('run.finished')).toHaveLength(0)
+    expect(h.backend.byRun(runId).state).toBe('running')
+
+    const b = h.boot({ secrets: { async resolve() { return 'value-long-enough-1' } } })
+    await b.orchestrator.start()
+    expect(b.of('run.recovered')).toMatchObject([{ runId, outcome: 'reattached' }])
+    h.backend.exit(runId, 0)
+    await vi.waitFor(() => expect(b.of('run.finished')).toHaveLength(1))
+    await b.orchestrator.stop()
+  })
 })
 
 describe('duplicate suppression by logical work identity (SPEC §6.6)', () => {

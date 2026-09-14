@@ -799,6 +799,9 @@ export class Orchestrator {
     state.active += 1
     const runId = makeRunId(agent.name)
     const active = newActiveRun(runId, agent.name, signal)
+    // Registered synchronously: a stop() that lands while the launch is still
+    // rendering/resolving must be able to steer this run too, not wait for it.
+    this.activeRuns.set(runId, active)
     this.record({ event: 'run.started', runId, agent: agent.name, signalId: signal.id })
 
     const outcome = Promise.resolve().then(async (): Promise<RunOutcome> => {
@@ -823,7 +826,6 @@ export class Orchestrator {
       })
       await writeLifecycleRecord(this.runsDir, lifecycle)
       this.protectedRuns.add(runId)
-      this.activeRuns.set(runId, active)
       // The intent now carries the delivery; the queue file has done its job.
       await this.queue.remove(agent.name, signal.id)
       this.ledger.setStatus(agent.name, signal.id, 'active', runId)
