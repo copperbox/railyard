@@ -1,12 +1,17 @@
-import { createWriteStream } from 'node:fs'
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { createWriteStream, type WriteStream } from 'node:fs'
+import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { LoadedAgent } from '../agents/loader.js'
 import { newRunId } from '../contracts/id.js'
-import type { EventsLine, SignalEnvelope } from '../contracts/types.js'
+import type { EventsLine } from '../contracts/types.js'
 import { docker, dockerOk } from '../docker/cli.js'
 import { LineSplitter, type Redactor } from '../secrets/redactor.js'
 import { EventsTailer } from './events-tailer.js'
+import {
+  updateLifecycleRecord,
+  type RunLifecycleRecord,
+} from './lifecycle.js'
+import { readWatchdogKill, spawnWatchdog, stopWatchdog, watchdogAlive } from './watchdog.js'
 
 /** Paths inside the container; exposed to the agent via env vars (SPEC §5). */
 export const CONTAINER_PATHS = {
@@ -28,28 +33,49 @@ export interface RunRecord {
   durationMs: number
   /** Container exit code; null when the container could not be started at all. */
   exitCode: number | null
-  status: 'succeeded' | 'failed'
+  /**
+   * `interrupted` = the container went missing while no orchestrator was
+   * supervising it, so no exit was ever observed (SPEC §6.5).
+   */
+  status: 'succeeded' | 'failed' | 'interrupted'
   /** Parsed contents of the agent's $AGENT_OUTPUT_DIR/result.json, if any. */
   result: unknown
   /** Why result is null despite success, e.g. unparsable result.json. */
   resultError: string | null
-  /** Why the framework killed the run (e.g. "timeout: exceeded 900s"); null otherwise. */
+  /** Why the framework killed the run ("timeout: exceeded 900s", "cancelled"); null otherwise. */
   killReason: string | null
 }
 
-export interface RunAgentParams {
-  agent: LoadedAgent
-  imageRef: string
-  signal: SignalEnvelope
-  runsDir: string
-  /** Caller-assigned id (see makeRunId) so run.started can be journaled before the container exists. */
-  runId?: string
+/**
+ * How the orchestrator steers a supervised run. Both are one-shot: abort
+ * `detach` to stop supervising while the container keeps running (restart),
+ * abort `cancel` to kill the container and finalize it as cancelled.
+ */
+export interface RunControl {
+  detach?: AbortSignal
+  cancel?: AbortSignal
+}
+
+export type RunOutcome =
+  | { kind: 'finished'; record: RunRecord }
+  /** Supervision ended by detach; the container is still the run's. */
+  | { kind: 'detached'; lifecycle: RunLifecycleRecord }
+
+export interface RunSupervisionHandlers {
   /**
-   * Hard-kill deadline in seconds, counted from container start (SPEC §6).
-   * `null` = the user explicitly opted into an indefinite run. Omitted = the
-   * manifest-schema default (900) — the safeguard is never silently absent.
+   * Valid events-file lines, dispatched while the container is still running,
+   * with the line's index (child signal identity). A returned promise is
+   * awaited before the events checkpoint advances past the line.
    */
-  timeoutSeconds?: number | null
+  onEvent: (line: EventsLine, index: number) => void | Promise<void>
+  onMalformedEvent?: (raw: string, reason: string) => void
+}
+
+export interface RunAgentParams extends RunSupervisionHandlers {
+  /** The persisted launch intent (phase `intent`); the runner advances it from here. */
+  lifecycle: RunLifecycleRecord
+  agent: LoadedAgent
+  runsDir: string
   /**
    * Extra env vars for the container — the agent's resolved secrets (SPEC §8).
    * Injected via value-less `-e NAME` flags + the docker CLI's process env, so
@@ -69,39 +95,81 @@ export interface RunAgentParams {
    * agents — no file, no var.
    */
   renderedPrompt?: string
-  /** Valid events-file lines, dispatched while the container is still running. */
-  onEvent: (line: EventsLine) => void
-  onMalformedEvent?: (raw: string, reason: string) => void
+  control?: RunControl
 }
 
-/**
- * One matched signal → one container → run → exit → removal (SPEC §6).
- * Teardown is guaranteed: `docker rm -f` runs on every path out of here, and a
- * boot-time sweep (sweepOrphanContainers) catches containers a crashed process
- * left behind.
- */
+export interface ResumeRunParams extends RunSupervisionHandlers {
+  /** A persisted record whose container was observed as created, running, or exited. */
+  lifecycle: RunLifecycleRecord
+  runsDir: string
+  redactor?: Redactor
+  control?: RunControl
+}
+
+/** What the backend can say about a persisted run's container, without touching it. */
+export interface RunObservation {
+  state: 'missing' | 'created' | 'running' | 'exited'
+  exitCode: number | null
+  finishedAt: string | null
+  /**
+   * The declared secrets exactly as the container holds them, so a resumed
+   * supervisor can redact values that were rotated away since launch. Kept in
+   * memory only — never written by the framework (SPEC §8).
+   */
+  secrets: Record<string, string>
+}
+
+/** The backend could not answer — distinct from "the container is gone". */
+export class BackendUnavailableError extends Error {
+  constructor(detail: string) {
+    super(`container backend unavailable: ${detail}`)
+    this.name = 'BackendUnavailableError'
+  }
+}
+
 export function makeRunId(agentName: string): string {
   const stamp = new Date().toISOString().replaceAll(':', '-')
   return `${stamp}--${agentName}--${newRunId()}`
 }
 
-export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
-  const { agent, imageRef, signal, runsDir } = params
-  const runId = params.runId ?? makeRunId(agent.name)
-  const runDir = path.join(runsDir, runId)
+const DEFAULT_TIMEOUT_SECONDS = 900
+
+/** Everything a supervising or finalizing step needs about one run. */
+interface RunContext {
+  lifecycle: RunLifecycleRecord
+  runsDir: string
+  runDir: string
+  outputDir: string
+  eventsFile: string
+  redactor: Redactor | undefined
+  control: RunControl
+  handlers: RunSupervisionHandlers
+  tailer: EventsTailer
+  logStream: WriteStream
+  splitters: { stdout: LineSplitter; stderr: LineSplitter }
+}
+
+/**
+ * One matched signal → one container → run → exit → removal (SPEC §6), with
+ * every transition persisted to the run's lifecycle record so a restarted
+ * orchestrator can pick up exactly where this one left off (SPEC §6.5).
+ */
+export async function runAgent(params: RunAgentParams): Promise<RunOutcome> {
+  const { runsDir } = params
+  const ctx = openRunContext(params.lifecycle, runsDir, params.redactor, params.control ?? {}, params)
+  const { runDir, outputDir, eventsFile } = ctx
   const inputDir = path.join(runDir, 'input')
-  const outputDir = path.join(runDir, 'output')
-  const eventsFile = path.join(runDir, 'events.jsonl')
-  const containerName = `railyard--${runId}`
+  const lc = params.lifecycle
+  const { containerName, imageRef, runId } = lc
+  const redactor = params.redactor
 
   await mkdir(inputDir, { recursive: true })
   await mkdir(outputDir, { recursive: true })
-  await writeFile(path.join(inputDir, 'signal.json'), JSON.stringify(signal, null, 2))
+  await writeFile(path.join(inputDir, 'signal.json'), JSON.stringify(lc.signal, null, 2))
   await writeFile(eventsFile, '')
   // Non-root container users must still be able to write their side of the contract.
   await chmod(outputDir, 0o777)
   await chmod(eventsFile, 0o666)
-  const redactor = params.redactor
   const redactJson = <T,>(value: T): T => (redactor ? redactor.redactJson(value) : value)
   if (params.renderedPrompt !== undefined) {
     // Belt-and-braces redaction: payloads are already redacted at emission.
@@ -113,7 +181,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
   await writeFile(
     path.join(runDir, 'invocation.json'),
     JSON.stringify(
-      redactJson({ runId, agent: agent.name, agentDir: agent.dir, imageRef, signal }),
+      redactJson({ runId, agent: lc.agent, agentDir: lc.agentDir, imageRef, signal: lc.signal }),
       null,
       2,
     ),
@@ -135,75 +203,352 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
   if (params.renderedPrompt !== undefined) {
     createArgs.push('-e', `AGENT_PROMPT_FILE=${CONTAINER_PATHS.promptFile}`)
   }
-  if (agent.manifest.network === 'none') createArgs.push('--network', 'none')
+  if (lc.network === 'none') createArgs.push('--network', 'none')
   for (const name of Object.keys(params.env ?? {})) createArgs.push('-e', name)
   createArgs.push(imageRef)
 
-  const tailer = new EventsTailer(eventsFile, {
-    onLine: params.onEvent,
-    onMalformed: params.onMalformedEvent ?? (() => {}),
-  })
-  const logStream = createWriteStream(path.join(runDir, 'agent.log'))
-  // Line-buffered so redaction always sees whole lines — a secret split across
-  // stream chunks must not slip through (SPEC §8).
-  const splitters = { stdout: new LineSplitter(), stderr: new LineSplitter() }
-  const writeLogChunk = (which: 'stdout' | 'stderr', chunk: string): void => {
-    for (const line of splitters[which].push(chunk)) {
-      logStream.write((redactor ? redactor.redactString(line) : line) + '\n')
-    }
+  try {
+    await dockerOk(createArgs, `run ${runId}`, params.env ? { env: params.env } : undefined)
+    ctx.lifecycle = await updateLifecycleRecord(runsDir, ctx.lifecycle, {
+      phase: 'created',
+      createdAt: new Date().toISOString(),
+    })
+    await ctx.tailer.start()
+    await startContainer(ctx)
+  } catch (err) {
+    await abandon(ctx, err)
+    throw err
   }
-  const timeoutSeconds = params.timeoutSeconds === undefined ? 900 : params.timeoutSeconds
+  return supervise(ctx)
+}
+
+/**
+ * Pick a persisted run back up. `created` containers are started now (their
+ * deadline counts from this start); `running` ones are reattached with the
+ * original deadline (and a watchdog respawned if the old one is gone);
+ * `exited` ones are finalized from what the backend and the run dir hold.
+ */
+export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
+  const observation = await observeRun(params.lifecycle)
+  if (observation.state === 'missing') {
+    throw new Error(`run ${params.lifecycle.runId}: container ${params.lifecycle.containerName} is missing`)
+  }
+  const ctx = openRunContext(params.lifecycle, params.runsDir, params.redactor, params.control ?? {}, params, {
+    resume: true,
+  })
+  ctx.lifecycle = await updateLifecycleRecord(params.runsDir, ctx.lifecycle, { detachedAt: null })
+  try {
+    await ctx.tailer.start()
+    if (observation.state === 'created') {
+      await startContainer(ctx)
+    } else if (observation.state === 'running') {
+      await ensureWatchdog(ctx)
+    } else {
+      // Exited during downtime: no supervision left to do, only collection.
+      await docker(['logs', ctx.lifecycle.containerName], {
+        onStdoutChunk: (chunk) => writeLogChunk(ctx, 'stdout', chunk),
+        onStderrChunk: (chunk) => writeLogChunk(ctx, 'stderr', chunk),
+      })
+      const exitCode = observation.exitCode ?? -1
+      ctx.lifecycle = await updateLifecycleRecord(params.runsDir, ctx.lifecycle, {
+        phase: 'exited',
+        exitCode,
+        exitedAt: observation.finishedAt ?? new Date().toISOString(),
+      })
+      const watchdogKill = await readWatchdogKill(ctx.runDir)
+      return { kind: 'finished', record: await finalize(ctx, exitCode, watchdogKill?.reason ?? null) }
+    }
+  } catch (err) {
+    await abandon(ctx, err)
+    throw err
+  }
+  return supervise(ctx)
+}
+
+/**
+ * Inspect a persisted run's container without changing anything. "Missing" is
+ * only ever concluded from a definite not-found answer; any other failure is
+ * reported as the backend being unavailable, so an unreachable daemon can't be
+ * mistaken for a lost run.
+ */
+export async function observeRun(lifecycle: RunLifecycleRecord): Promise<RunObservation> {
+  const res = await docker(['inspect', '--format', '{{json .}}', lifecycle.containerName])
+  if (res.code !== 0) {
+    if (/no such (object|container)/i.test(res.stderr)) {
+      return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+    }
+    throw new BackendUnavailableError(res.stderr.trim() || `docker inspect exited ${res.code}`)
+  }
+  let parsed: {
+    State?: { Status?: string; ExitCode?: number; FinishedAt?: string }
+    Config?: { Env?: string[] }
+  }
+  try {
+    parsed = JSON.parse(res.stdout) as typeof parsed
+  } catch (err) {
+    throw new BackendUnavailableError(`unparsable inspect output: ${(err as Error).message}`)
+  }
+  const status = parsed.State?.Status ?? ''
+  const state: RunObservation['state'] =
+    status === 'created'
+      ? 'created'
+      : status === 'running' || status === 'paused' || status === 'restarting'
+        ? 'running'
+        : 'exited'
+  const secrets: Record<string, string> = {}
+  const wanted = new Set(lifecycle.secretNames)
+  for (const entry of parsed.Config?.Env ?? []) {
+    const eq = entry.indexOf('=')
+    if (eq <= 0) continue
+    const name = entry.slice(0, eq)
+    if (wanted.has(name)) secrets[name] = entry.slice(eq + 1)
+  }
+  const finishedAt = parsed.State?.FinishedAt ?? null
+  return {
+    state,
+    exitCode: state === 'exited' ? (parsed.State?.ExitCode ?? -1) : null,
+    finishedAt: finishedAt !== null && !finishedAt.startsWith('0001-') ? finishedAt : null,
+    secrets,
+  }
+}
+
+/**
+ * Record a run whose container is gone with no exit ever observed. Pure
+ * bookkeeping: writes result.json (status `interrupted`) and closes out the
+ * lifecycle record. No backend calls.
+ */
+export async function recordInterruptedRun(
+  runsDir: string,
+  lifecycle: RunLifecycleRecord,
+  reason: string,
+): Promise<RunRecord> {
+  const now = new Date()
+  const startedAt = lifecycle.startedAt ?? lifecycle.intentAt
+  const record: RunRecord = {
+    runId: lifecycle.runId,
+    agent: lifecycle.agent,
+    signalId: lifecycle.signal.id,
+    imageRef: lifecycle.imageRef,
+    startedAt,
+    finishedAt: now.toISOString(),
+    durationMs: null as unknown as number,
+    exitCode: null,
+    status: 'interrupted',
+    result: null,
+    resultError: reason,
+    killReason: null,
+  }
+  record.durationMs = Math.max(0, now.getTime() - Date.parse(startedAt))
+  await mkdir(path.join(runsDir, lifecycle.runId), { recursive: true })
+  await writeFile(path.join(runsDir, lifecycle.runId, 'result.json'), JSON.stringify(record, null, 2))
+  await updateLifecycleRecord(runsDir, lifecycle, {
+    phase: 'finalized',
+    finalizedAt: record.finishedAt,
+    outcome: record,
+    error: reason,
+  })
+  return record
+}
+
+function openRunContext(
+  lifecycle: RunLifecycleRecord,
+  runsDir: string,
+  redactor: Redactor | undefined,
+  control: RunControl,
+  handlers: RunSupervisionHandlers,
+  options: { resume?: boolean } = {},
+): RunContext {
+  const runDir = path.join(runsDir, lifecycle.runId)
+  const eventsFile = path.join(runDir, 'events.jsonl')
+  const tailer = new EventsTailer(
+    eventsFile,
+    {
+      onLine: handlers.onEvent,
+      onMalformed: handlers.onMalformedEvent ?? (() => {}),
+      onCheckpoint: async (offset, consumed) => {
+        ctx.lifecycle = await updateLifecycleRecord(runsDir, ctx.lifecycle, {
+          eventsOffset: offset,
+          eventsConsumed: consumed,
+        })
+      },
+    },
+    options.resume
+      ? { startOffset: lifecycle.eventsOffset, startIndex: lifecycle.eventsConsumed }
+      : {},
+  )
+  // `docker logs` replays from the beginning on every attach, so a resumed
+  // capture rewrites agent.log whole — complete, and redacted with the
+  // current redactor.
+  const ctx: RunContext = {
+    lifecycle,
+    runsDir,
+    runDir,
+    outputDir: path.join(runDir, 'output'),
+    eventsFile,
+    redactor,
+    control,
+    handlers,
+    tailer,
+    logStream: createWriteStream(path.join(runDir, 'agent.log')),
+    // Line-buffered so redaction always sees whole lines — a secret split across
+    // stream chunks must not slip through (SPEC §8).
+    splitters: { stdout: new LineSplitter(), stderr: new LineSplitter() },
+  }
+  return ctx
+}
+
+function writeLogChunk(ctx: RunContext, which: 'stdout' | 'stderr', chunk: string): void {
+  for (const line of ctx.splitters[which].push(chunk)) {
+    ctx.logStream.write((ctx.redactor ? ctx.redactor.redactString(line) : line) + '\n')
+  }
+}
+
+async function startContainer(ctx: RunContext): Promise<void> {
+  const { runId, containerName } = ctx.lifecycle
+  await dockerOk(['start', containerName], `run ${runId}`)
   const startedAt = new Date()
-  let exitCode: number | null = null
+  const timeoutSeconds =
+    ctx.lifecycle.timeoutSeconds === undefined ? DEFAULT_TIMEOUT_SECONDS : ctx.lifecycle.timeoutSeconds
+  const deadlineAt =
+    timeoutSeconds === null ? null : new Date(startedAt.getTime() + timeoutSeconds * 1000)
+  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {
+    phase: 'started',
+    startedAt: startedAt.toISOString(),
+    deadlineAt: deadlineAt?.toISOString() ?? null,
+  })
+  if (deadlineAt !== null) await ensureWatchdog(ctx)
+}
+
+/** Spawn the deadline watchdog unless one of ours is already alive for this container. */
+async function ensureWatchdog(ctx: RunContext): Promise<void> {
+  const lc = ctx.lifecycle
+  if (lc.deadlineAt === null || lc.timeoutSeconds === null) return
+  if (lc.watchdogPid !== null && (await watchdogAlive(lc.watchdogPid, lc.containerName))) return
+  const deadline = new Date(lc.deadlineAt)
+  if (deadline.getTime() <= Date.now()) return // supervise()'s timer fires immediately
+  const pid = spawnWatchdog({
+    containerName: lc.containerName,
+    runDir: ctx.runDir,
+    deadlineAt: deadline,
+    timeoutSeconds: lc.timeoutSeconds,
+  })
+  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, lc, { watchdogPid: pid })
+}
+
+/**
+ * Watch a started container until it exits, is cancelled, or we are told to
+ * detach. Hard timeout (SPEC §6): SIGKILL at the absolute deadline so the
+ * wait/logs path completes normally and teardown stays on the one route.
+ */
+async function supervise(ctx: RunContext): Promise<RunOutcome> {
+  const { containerName, runId } = ctx.lifecycle
   let killReason: string | null = null
   let killTimer: NodeJS.Timeout | undefined
   let killDone: Promise<void> | undefined
-
-  try {
-    await dockerOk(createArgs, `run ${runId}`, params.env ? { env: params.env } : undefined)
-    await tailer.start()
-    await dockerOk(['start', containerName], `run ${runId}`)
-
-    // Hard timeout (SPEC §6): SIGKILL the container so the wait/logs path below
-    // completes normally and teardown stays on the one guaranteed route.
-    if (timeoutSeconds !== null) {
-      killTimer = setTimeout(() => {
-        killDone = docker(['kill', containerName]).then((res) => {
-          // A failed kill means the container had already exited — not a timeout.
-          if (res.code === 0) killReason = `timeout: exceeded ${timeoutSeconds}s`
-        })
-      }, timeoutSeconds * 1000)
-    }
-
-    // `docker logs --follow` replays from the beginning, so nothing between
-    // start and attach is lost; it ends when the container exits.
-    const logsDone = docker(['logs', '--follow', containerName], {
-      onStdoutChunk: (chunk) => writeLogChunk('stdout', chunk),
-      onStderrChunk: (chunk) => writeLogChunk('stderr', chunk),
+  const kill = (reason: string): Promise<void> =>
+    docker(['kill', containerName]).then((res) => {
+      // A failed kill means the container had already exited — not our doing.
+      if (res.code === 0 && killReason === null) killReason = reason
     })
-    const waited = await dockerOk(['wait', containerName], `run ${runId}`)
+  if (ctx.lifecycle.deadlineAt !== null) {
+    const remaining = Date.parse(ctx.lifecycle.deadlineAt) - Date.now()
+    const reason = `timeout: exceeded ${String(ctx.lifecycle.timeoutSeconds)}s`
+    killTimer = setTimeout(
+      () => {
+        killDone = kill(reason)
+      },
+      Math.max(0, remaining),
+    )
+  }
+  const onCancel = (): void => {
+    killDone = kill('cancelled')
+  }
+  if (ctx.control.cancel?.aborted) onCancel()
+  else ctx.control.cancel?.addEventListener('abort', onCancel, { once: true })
+
+  const attach = new AbortController()
+  const onDetach = (): void => attach.abort()
+  if (ctx.control.detach?.aborted) onDetach()
+  else ctx.control.detach?.addEventListener('abort', onDetach, { once: true })
+
+  let exitCode: number | null = null
+  try {
+    const logsDone = docker(['logs', '--follow', containerName], {
+      onStdoutChunk: (chunk) => writeLogChunk(ctx, 'stdout', chunk),
+      onStderrChunk: (chunk) => writeLogChunk(ctx, 'stderr', chunk),
+      signal: attach.signal,
+    })
+    const waited = await docker(['wait', containerName], { signal: attach.signal })
+    if (attach.signal.aborted) {
+      await logsDone
+      return { kind: 'detached', lifecycle: await detach(ctx, killTimer) }
+    }
+    if (waited.code !== 0) {
+      throw new Error(`run ${runId}: docker wait exited ${waited.code}: ${waited.stderr.trim()}`)
+    }
     exitCode = Number.parseInt(waited.stdout.trim(), 10)
     if (Number.isNaN(exitCode)) exitCode = -1
     await logsDone
-  } finally {
+  } catch (err) {
     if (killTimer !== undefined) clearTimeout(killTimer)
-    // If the timer already fired, learn whether it actually killed before we record.
-    await killDone?.catch(() => {})
-    await tailer.stop().catch(() => {})
-    for (const splitter of [splitters.stdout, splitters.stderr]) {
-      const rest = splitter.flush()
-      if (rest !== null) logStream.write((redactor ? redactor.redactString(rest) : rest) + '\n')
-    }
-    logStream.end()
-    // Guaranteed teardown (SPEC §6): remove the container on every path.
-    await docker(['rm', '-f', containerName])
+    await abandon(ctx, err)
+    throw err
+  } finally {
+    ctx.control.cancel?.removeEventListener('abort', onCancel)
+    ctx.control.detach?.removeEventListener('abort', onDetach)
   }
+  if (killTimer !== undefined) clearTimeout(killTimer)
+  // If a kill is in flight, learn whether it actually landed before we record.
+  await killDone?.catch(() => {})
+  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {
+    phase: 'exited',
+    exitCode,
+    exitedAt: new Date().toISOString(),
+  })
+  if (killReason === null) killReason = (await readWatchdogKill(ctx.runDir))?.reason ?? null
+  return { kind: 'finished', record: await finalize(ctx, exitCode, killReason) }
+}
+
+/** Stop supervising without touching the container; leave a resumable record. */
+async function detach(ctx: RunContext, killTimer: NodeJS.Timeout | undefined): Promise<RunLifecycleRecord> {
+  if (killTimer !== undefined) clearTimeout(killTimer)
+  // Not final: an unterminated last line may still be mid-write.
+  await ctx.tailer.stop({ final: false }).catch(() => {})
+  const { offset, consumed } = ctx.tailer.checkpoint
+  await endLog(ctx)
+  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {
+    eventsOffset: offset,
+    eventsConsumed: consumed,
+    detachedAt: new Date().toISOString(),
+  })
+  return ctx.lifecycle
+}
+
+async function endLog(ctx: RunContext): Promise<void> {
+  for (const splitter of [ctx.splitters.stdout, ctx.splitters.stderr]) {
+    const rest = splitter.flush()
+    if (rest !== null) ctx.logStream.write((ctx.redactor ? ctx.redactor.redactString(rest) : rest) + '\n')
+  }
+  await new Promise<void>((resolve) => ctx.logStream.end(resolve))
+}
+
+/**
+ * Collect results, scrub, write result.json, remove the container, and mark
+ * the record finalized. Guaranteed teardown (SPEC §6): the container is
+ * removed on every path through here.
+ */
+async function finalize(ctx: RunContext, exitCode: number, killReason: string | null): Promise<RunRecord> {
+  const lc = ctx.lifecycle
+  await ctx.tailer.stop().catch(() => {})
+  await endLog(ctx)
+  await stopWatchdog(lc.watchdogPid, lc.containerName)
+  await docker(['rm', '-f', lc.containerName])
 
   const finishedAt = new Date()
   let result: unknown = null
   let resultError: string | null = null
   try {
-    result = JSON.parse(await readFile(path.join(outputDir, 'result.json'), 'utf8'))
+    result = JSON.parse(await readFile(path.join(ctx.outputDir, 'result.json'), 'utf8'))
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       resultError = 'agent wrote no result.json'
@@ -211,30 +556,48 @@ export async function runAgent(params: RunAgentParams): Promise<RunRecord> {
       resultError = `result.json unreadable: ${(err as Error).message}`
     }
   }
-
-  if (redactor) {
+  if (ctx.redactor) {
     // The agent wrote these two directly; scrub them now that the run is over.
     // Arbitrary other output files are the agent's own business (documented).
-    await rewriteRedacted(eventsFile, redactor)
-    await rewriteRedacted(path.join(outputDir, 'result.json'), redactor)
+    await rewriteRedacted(ctx.eventsFile, ctx.redactor)
+    await rewriteRedacted(path.join(ctx.outputDir, 'result.json'), ctx.redactor)
   }
-
+  const startedAt = lc.startedAt ?? lc.createdAt ?? lc.intentAt
   const record: RunRecord = {
-    runId,
-    agent: agent.name,
-    signalId: signal.id,
-    imageRef,
-    startedAt: startedAt.toISOString(),
+    runId: lc.runId,
+    agent: lc.agent,
+    signalId: lc.signal.id,
+    imageRef: lc.imageRef,
+    startedAt,
     finishedAt: finishedAt.toISOString(),
-    durationMs: finishedAt.getTime() - startedAt.getTime(),
+    durationMs: finishedAt.getTime() - Date.parse(startedAt),
     exitCode,
     status: exitCode === 0 ? 'succeeded' : 'failed',
-    result: redactJson(result),
+    result: ctx.redactor ? ctx.redactor.redactJson(result) : result,
     resultError,
     killReason,
   }
-  await writeFile(path.join(runDir, 'result.json'), JSON.stringify(record, null, 2))
+  await writeFile(path.join(ctx.runDir, 'result.json'), JSON.stringify(record, null, 2))
+  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, lc, {
+    phase: 'finalized',
+    finalizedAt: record.finishedAt,
+    outcome: record,
+  })
   return record
+}
+
+/** A launch/supervision step failed: tear down what exists and record the error. */
+async function abandon(ctx: RunContext, err: unknown): Promise<void> {
+  const lc = ctx.lifecycle
+  await ctx.tailer.stop().catch(() => {})
+  await endLog(ctx).catch(() => {})
+  await stopWatchdog(lc.watchdogPid, lc.containerName).catch(() => {})
+  await docker(['rm', '-f', lc.containerName]).catch(() => {})
+  await updateLifecycleRecord(ctx.runsDir, lc, {
+    phase: 'finalized',
+    finalizedAt: new Date().toISOString(),
+    error: String((err as Error).message ?? err),
+  }).catch(() => {})
 }
 
 /**
@@ -257,15 +620,39 @@ async function rewriteRedacted(filePath: string, redactor: Redactor): Promise<vo
 }
 
 /**
- * Boot-time sweep: force-remove containers labeled with this runs root that a
- * crashed orchestrator left behind. Scoped by absolute runsDir so concurrent
- * orchestrators with separate runs directories never touch each other.
+ * Remove containers labeled with this runs root whose run id is not in `keep`
+ * — true orphans with no lifecycle record to recover from. Scoped by absolute
+ * runsDir so orchestrators with separate runs directories never touch each
+ * other. Returns the removed run ids.
  */
-export async function sweepOrphanContainers(runsDir: string): Promise<string[]> {
-  const listed = await docker([
-    'ps', '-aq', '--filter', `label=railyard.runsRoot=${path.resolve(runsDir)}`,
-  ])
-  const ids = listed.stdout.trim().split('\n').filter(Boolean)
-  if (ids.length > 0) await docker(['rm', '-f', ...ids])
-  return ids
+export async function sweepOrphanContainers(
+  runsDir: string,
+  keep: ReadonlySet<string> = new Set(),
+): Promise<string[]> {
+  const listed = await dockerOk(
+    [
+      'ps', '-a',
+      '--filter', `label=railyard.runsRoot=${path.resolve(runsDir)}`,
+      '--format', '{{.ID}} {{.Label "railyard.run"}}',
+    ],
+    'orphan sweep',
+  )
+  const doomed: Array<{ id: string; runId: string }> = []
+  for (const line of listed.stdout.split('\n')) {
+    const [id, runId = ''] = line.trim().split(/\s+/, 2)
+    if (!id) continue
+    if (keep.has(runId)) continue
+    doomed.push({ id, runId })
+  }
+  if (doomed.length > 0) await docker(['rm', '-f', ...doomed.map((d) => d.id)])
+  return doomed.map((d) => d.runId || d.id)
+}
+
+/** True when the run directory still exists (used by callers deciding what to protect). */
+export async function runDirExists(runsDir: string, runId: string): Promise<boolean> {
+  try {
+    return (await stat(path.join(runsDir, runId))).isDirectory()
+  } catch {
+    return false
+  }
 }

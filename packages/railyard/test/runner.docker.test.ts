@@ -7,7 +7,14 @@ import { stampSignal } from '../src/bus/stamp.js'
 import type { EventsLine } from '../src/contracts/types.js'
 import { dockerDaemonAvailable, ensureAgentImage } from '../src/docker/build.js'
 import { docker, dockerOk } from '../src/docker/cli.js'
-import { runAgent, sweepOrphanContainers } from '../src/run/runner.js'
+import { createRunIntent, writeLifecycleRecord } from '../src/run/lifecycle.js'
+import {
+  makeRunId,
+  runAgent,
+  sweepOrphanContainers,
+  type RunAgentParams,
+  type RunRecord,
+} from '../src/run/runner.js'
 import { Redactor } from '../src/secrets/redactor.js'
 
 const DOCKER = process.env.RAILYARD_DOCKER_TESTS === '1'
@@ -15,6 +22,45 @@ const FIXTURE = path.join(import.meta.dirname, 'fixtures/agents/echo-agent')
 
 function tickSignal(payload: unknown) {
   return stampSignal({ kind: 'monitor', name: 'test' }, { type: 'demo.tick', payload })
+}
+
+/** The 1.x runAgent shape, mapped onto a persisted intent record (what the orchestrator does). */
+async function run(params: {
+  agent: LoadedAgent
+  imageRef: string
+  signal: ReturnType<typeof tickSignal>
+  runsDir: string
+  timeoutSeconds?: number | null
+  env?: Record<string, string>
+  redactor?: Redactor
+  renderedPrompt?: string
+  onEvent: RunAgentParams['onEvent']
+  onMalformedEvent?: RunAgentParams['onMalformedEvent']
+}): Promise<RunRecord> {
+  const lifecycle = createRunIntent({
+    runId: makeRunId(params.agent.name),
+    agent: params.agent.name,
+    agentDir: params.agent.dir,
+    imageRef: params.imageRef,
+    signal: params.signal,
+    timeoutSeconds: params.timeoutSeconds === undefined ? 900 : params.timeoutSeconds,
+    network: params.agent.manifest.network,
+    secretNames: Object.keys(params.env ?? {}),
+    hasPrompt: params.renderedPrompt !== undefined,
+  })
+  await writeLifecycleRecord(params.runsDir, lifecycle)
+  const outcome = await runAgent({
+    lifecycle,
+    agent: params.agent,
+    runsDir: params.runsDir,
+    ...(params.env ? { env: params.env } : {}),
+    ...(params.redactor ? { redactor: params.redactor } : {}),
+    ...(params.renderedPrompt !== undefined ? { renderedPrompt: params.renderedPrompt } : {}),
+    onEvent: params.onEvent,
+    ...(params.onMalformedEvent ? { onMalformedEvent: params.onMalformedEvent } : {}),
+  })
+  if (outcome.kind !== 'finished') throw new Error('unexpected detach')
+  return outcome.record
 }
 
 describe.skipIf(!DOCKER)('docker: image build', () => {
@@ -58,7 +104,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     const events: Array<{ line: EventsLine; at: number }> = []
     const malformed: string[] = []
     const started = Date.now()
-    const record = await runAgent({
+    const record = await run({
       agent,
       imageRef,
       signal: tickSignal({ n: 7, sleep: 2 }),
@@ -85,9 +131,12 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     expect(malformed).toEqual(['deliberately not json'])
 
     const runDir = path.join(runsDir, record.runId)
-    for (const file of ['invocation.json', 'agent.log', 'events.jsonl', 'result.json']) {
+    for (const file of ['invocation.json', 'agent.log', 'events.jsonl', 'result.json', 'lifecycle.json']) {
       expect((await stat(path.join(runDir, file))).isFile(), file).toBe(true)
     }
+    const lifecycle = JSON.parse(await readFile(path.join(runDir, 'lifecycle.json'), 'utf8'))
+    expect(lifecycle).toMatchObject({ phase: 'finalized', exitCode: 0, watchdogPid: expect.any(Number) })
+    expect(lifecycle.outcome).toEqual(record)
     const invocation = JSON.parse(await readFile(path.join(runDir, 'invocation.json'), 'utf8'))
     expect(invocation.signal.payload).toEqual({ n: 7, sleep: 2 })
 
@@ -95,7 +144,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
   })
 
   it('records a non-zero exit as failure and still tears down', async () => {
-    const record = await runAgent({
+    const record = await run({
       agent,
       imageRef,
       signal: tickSignal({ n: 1, fail: true }),
@@ -111,7 +160,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
 
   it('hard-kills a run past its timeout, records killReason, still tears down (SPEC §6)', async () => {
     const started = Date.now()
-    const record = await runAgent({
+    const record = await run({
       agent,
       imageRef,
       signal: tickSignal({ n: 5, sleep: 60 }),
@@ -123,6 +172,8 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     expect(record.status).toBe('failed')
     expect(record.exitCode).toBe(137)
     expect(record.killReason).toBe('timeout: exceeded 2s')
+    const lifecycle = JSON.parse(await readFile(path.join(runsDir, record.runId, 'lifecycle.json'), 'utf8'))
+    expect(lifecycle.deadlineAt).not.toBeNull()
     // Output emitted before the kill is preserved.
     const runDir = path.join(runsDir, record.runId)
     for (const file of ['invocation.json', 'agent.log', 'events.jsonl', 'result.json']) {
@@ -132,7 +183,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
   }, 40_000)
 
   it('timeout: null means no timer — the run completes on its own', async () => {
-    const record = await runAgent({
+    const record = await run({
       agent,
       imageRef,
       signal: tickSignal({ n: 2, sleep: 2 }),
@@ -151,7 +202,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     )
     const secretImage = await ensureAgentImage(secretAgent)
 
-    const withSecret = await runAgent({
+    const withSecret = await run({
       agent: secretAgent,
       imageRef: secretImage,
       signal: tickSignal({ n: 1 }),
@@ -162,7 +213,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     expect(withSecret.status).toBe('succeeded')
     expect(withSecret.result).toEqual({ secretSeen: true })
 
-    const withoutSecret = await runAgent({
+    const withoutSecret = await run({
       agent: secretAgent,
       imageRef: secretImage,
       signal: tickSignal({ n: 1 }),
@@ -180,7 +231,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     const redactor = new Redactor()
     expect(redactor.register('LEAK_SECRET', SECRET)).toBe(true)
 
-    const record = await runAgent({
+    const record = await run({
       agent: leakAgent,
       imageRef: leakImage,
       signal: tickSignal({ n: 1 }),
@@ -213,7 +264,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     const promptAgent = await loadAgentFolder(path.join(import.meta.dirname, 'fixtures/prompt-agent'))
     const promptImage = await ensureAgentImage(promptAgent)
 
-    const record = await runAgent({
+    const record = await run({
       agent: promptAgent,
       imageRef: promptImage,
       signal: tickSignal({ n: 7 }),
@@ -235,7 +286,7 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
     const promptAgent = await loadAgentFolder(path.join(import.meta.dirname, 'fixtures/prompt-agent'))
     const promptImage = await ensureAgentImage(promptAgent)
 
-    const record = await runAgent({
+    const record = await run({
       agent: promptAgent,
       imageRef: promptImage,
       signal: tickSignal({ n: 7 }),
@@ -257,8 +308,21 @@ describe.skipIf(!DOCKER)('docker: runner honors the container contract', () => {
       ],
       'orphan fixture',
     )
-    const removed = await sweepOrphanContainers(runsDir)
-    expect(removed.length).toBeGreaterThanOrEqual(1)
+    await dockerOk(
+      [
+        'create',
+        '--label', `railyard.runsRoot=${path.resolve(runsDir)}`,
+        '--label', 'railyard.run=keep-me',
+        imageRef,
+      ],
+      'kept fixture',
+    )
+    const removed = await sweepOrphanContainers(runsDir, new Set(['keep-me']))
+    expect(removed).toContain('orphan-test')
+    expect(removed).not.toContain('keep-me')
     expect(await containersFor('orphan-test')).toEqual([])
+    expect(await containersFor('keep-me')).toHaveLength(1)
+    await sweepOrphanContainers(runsDir)
+    expect(await containersFor('keep-me')).toEqual([])
   })
 })

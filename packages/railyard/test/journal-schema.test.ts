@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { validateJournalLine } from '../src/contracts/validate.js'
 import type { MonitorContext } from '../src/monitor/monitor.js'
 import type { AgentExecutor } from '../src/run/executor.js'
-import type { RunAgentParams, RunRecord } from '../src/run/runner.js'
+import type { RunAgentParams, RunObservation, RunOutcome, RunRecord } from '../src/run/runner.js'
 import { Orchestrator } from '../src/orchestrator.js'
 
 const AT = { at: '2026-07-19T00:00:00.000Z' }
@@ -20,6 +20,14 @@ describe('journal-line.schema.json fixtures (disk contract, SPEC §12)', () => {
     ['run.finished (succeeded)', { event: 'run.finished', ...AT, runId: 'r', agent: 'a', signalId: 's', status: 'succeeded', exitCode: 0, durationMs: 12 }],
     ['run.finished (killed)', { event: 'run.finished', ...AT, runId: 'r', agent: 'a', signalId: 's', status: 'failed', exitCode: 137, durationMs: 12, killReason: 'timeout: exceeded 2s' }],
     ['run.finished (framework error)', { event: 'run.finished', ...AT, runId: 'r', agent: 'a', signalId: 's', status: 'error', exitCode: null, durationMs: null, error: 'boom' }],
+    ['run.finished (interrupted)', { event: 'run.finished', ...AT, runId: 'r', agent: 'a', signalId: 's', status: 'interrupted', exitCode: null, durationMs: 5, error: 'container missing on recovery' }],
+    ['run.finished (cancelled)', { event: 'run.finished', ...AT, runId: 'r', agent: 'a', signalId: 's', status: 'failed', exitCode: 137, durationMs: 5, killReason: 'cancelled' }],
+    ['run.detached', { event: 'run.detached', ...AT, runId: 'r', agent: 'a', signalId: 's' }],
+    ['run.recovered (reattached)', { event: 'run.recovered', ...AT, runId: 'r', agent: 'a', signalId: 's', outcome: 'reattached' }],
+    ['run.recovered (requeued)', { event: 'run.recovered', ...AT, runId: 'r', agent: 'a', signalId: 's', outcome: 'requeued' }],
+    ['run.skipped (duplicate, with detail)', { event: 'run.skipped', ...AT, agent: 'a', signalId: 's', signalType: 't', reason: 'duplicate', detail: 'work "k" attempt 1 is active' }],
+    ['run.skipped (cancelled)', { event: 'run.skipped', ...AT, agent: 'a', signalId: 's', signalType: 't', reason: 'cancelled' }],
+    ['run.skipped (agent-removed)', { event: 'run.skipped', ...AT, agent: 'a', signalId: 's', signalType: 't', reason: 'agent-removed' }],
     ['run.queued', { event: 'run.queued', ...AT, agent: 'a', signalId: 's', signalType: 't', queueDepth: 1 }],
     ['run.skipped (self-trigger)', { event: 'run.skipped', ...AT, agent: 'a', signalId: 's', signalType: 't', reason: 'self-trigger' }],
     ['run.skipped (shutdown)', { event: 'run.skipped', ...AT, agent: 'a', signalId: 's', signalType: 't', reason: 'shutdown' }],
@@ -36,6 +44,7 @@ describe('journal-line.schema.json fixtures (disk contract, SPEC §12)', () => {
     ['bad finished status', { event: 'run.finished', ...AT, runId: 'r', agent: 'a', signalId: 's', status: 'meh', exitCode: 0, durationMs: 1 }],
     ['extra property', { event: 'note', ...AT, message: 'hi', wat: true }],
     ['zero queueDepth', { event: 'run.queued', ...AT, agent: 'a', signalId: 's', signalType: 't', queueDepth: 0 }],
+    ['bad recovered outcome', { event: 'run.recovered', ...AT, runId: 'r', agent: 'a', signalId: 's', outcome: 'resurrected' }],
   ])('rejects %s', (_name, line) => {
     expect(validateJournalLine(line)).toBe(false)
   })
@@ -60,14 +69,14 @@ describe('real journal output validates line by line', () => {
       async ensureReady(agent) {
         return `fake/${agent.name}:latest`
       },
-      async execute(params: RunAgentParams): Promise<RunRecord> {
-        params.onEvent({ kind: 'signal', type: 'busy.done', payload: {} })
+      async execute(params: RunAgentParams): Promise<RunOutcome> {
+        await params.onEvent({ kind: 'signal', type: 'busy.done', payload: {} }, 0)
         const now = new Date().toISOString()
-        return {
-          runId: params.runId ?? 'run',
+        const record: RunRecord = {
+          runId: params.lifecycle.runId,
           agent: params.agent.name,
-          signalId: params.signal.id,
-          imageRef: params.imageRef,
+          signalId: params.lifecycle.signal.id,
+          imageRef: params.lifecycle.imageRef,
           startedAt: now,
           finishedAt: now,
           durationMs: 1,
@@ -77,6 +86,13 @@ describe('real journal output validates line by line', () => {
           resultError: null,
           killReason: null,
         }
+        return { kind: 'finished', record }
+      },
+      async observe(): Promise<RunObservation> {
+        return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+      },
+      async resume(): Promise<RunOutcome> {
+        throw new Error('not used')
       },
       async sweep() {
         return []

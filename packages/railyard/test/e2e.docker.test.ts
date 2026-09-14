@@ -78,7 +78,7 @@ describe.skipIf(!DOCKER)('docker: end-to-end walking skeleton (SPEC §15 M0)', (
     })
 
     // The run directory holds all four files (SPEC §12), and the input round-tripped.
-    const runDirs = (await readdir(runsDir)).filter((d) => d.includes('echo-agent'))
+    const runDirs = (await readdir(runsDir)).filter((d) => d.includes('--echo-agent--'))
     expect(runDirs).toHaveLength(1)
     const runDir = path.join(runsDir, runDirs[0]!)
     expect((await readdir(runDir)).sort()).toEqual([
@@ -86,9 +86,12 @@ describe.skipIf(!DOCKER)('docker: end-to-end walking skeleton (SPEC §15 M0)', (
       'events.jsonl',
       'input',
       'invocation.json',
+      'lifecycle.json',
       'output',
       'result.json',
     ])
+    const lifecycle = JSON.parse(await readFile(path.join(runDir, 'lifecycle.json'), 'utf8'))
+    expect(lifecycle).toMatchObject({ lifecycleVersion: 1, phase: 'closed', agent: 'echo-agent' })
     const record = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8'))
     expect(record.result).toEqual({ echoed: 1 })
     const eventsFile = await readFile(path.join(runDir, 'events.jsonl'), 'utf8')

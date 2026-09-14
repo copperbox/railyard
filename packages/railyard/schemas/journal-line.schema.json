@@ -4,129 +4,393 @@
   "title": "Journal line",
   "description": "One line of runs/journal.jsonl (SPEC §12): the append-only index of every signal received and every run started/finished, plus safeguard outcomes (M1). A language-neutral disk contract; `at` is stamped by the journal at append time.",
   "oneOf": [
-    { "$ref": "#/$defs/signalReceived" },
-    { "$ref": "#/$defs/signalDropped" },
-    { "$ref": "#/$defs/runStarted" },
-    { "$ref": "#/$defs/runFinished" },
-    { "$ref": "#/$defs/runQueued" },
-    { "$ref": "#/$defs/runSkipped" },
-    { "$ref": "#/$defs/retentionSwept" },
-    { "$ref": "#/$defs/note" }
+    {
+      "$ref": "#/$defs/signalReceived"
+    },
+    {
+      "$ref": "#/$defs/signalDropped"
+    },
+    {
+      "$ref": "#/$defs/runStarted"
+    },
+    {
+      "$ref": "#/$defs/runFinished"
+    },
+    {
+      "$ref": "#/$defs/runDetached"
+    },
+    {
+      "$ref": "#/$defs/runRecovered"
+    },
+    {
+      "$ref": "#/$defs/runQueued"
+    },
+    {
+      "$ref": "#/$defs/runSkipped"
+    },
+    {
+      "$ref": "#/$defs/retentionSwept"
+    },
+    {
+      "$ref": "#/$defs/note"
+    }
   ],
   "$defs": {
-    "at": { "type": "string", "format": "date-time" },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    },
     "source": {
       "type": "object",
-      "required": ["kind", "name"],
+      "required": [
+        "kind",
+        "name"
+      ],
       "additionalProperties": false,
       "properties": {
-        "kind": { "enum": ["monitor", "agent"] },
-        "name": { "type": "string", "minLength": 1 }
+        "kind": {
+          "enum": [
+            "monitor",
+            "agent"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "signalReceived": {
       "type": "object",
-      "required": ["event", "at", "signalId", "signalType", "source", "provenanceDepth"],
+      "required": [
+        "event",
+        "at",
+        "signalId",
+        "signalType",
+        "source",
+        "provenanceDepth"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "signal.received" },
-        "at": { "$ref": "#/$defs/at" },
-        "signalId": { "type": "string" },
-        "signalType": { "type": "string" },
-        "source": { "$ref": "#/$defs/source" },
-        "provenanceDepth": { "type": "integer", "minimum": 0 }
+        "event": {
+          "const": "signal.received"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "signalId": {
+          "type": "string"
+        },
+        "signalType": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "provenanceDepth": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "signalDropped": {
       "type": "object",
       "description": "An emission that never reached the bus: invalid payload, undeclared type, or beyond the provenance depth limit (SPEC §7). Never silent (invariant 10).",
-      "required": ["event", "at", "reason"],
+      "required": [
+        "event",
+        "at",
+        "reason"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "signal.dropped" },
-        "at": { "$ref": "#/$defs/at" },
-        "reason": { "type": "string" },
-        "signalType": { "type": "string" },
-        "source": { "$ref": "#/$defs/source" }
+        "event": {
+          "const": "signal.dropped"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "signalType": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
       }
     },
     "runStarted": {
       "type": "object",
-      "required": ["event", "at", "runId", "agent", "signalId"],
+      "required": [
+        "event",
+        "at",
+        "runId",
+        "agent",
+        "signalId"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "run.started" },
-        "at": { "$ref": "#/$defs/at" },
-        "runId": { "type": "string" },
-        "agent": { "type": "string" },
-        "signalId": { "type": "string" }
+        "event": {
+          "const": "run.started"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "signalId": {
+          "type": "string"
+        }
       }
     },
     "runFinished": {
       "type": "object",
-      "description": "status \"succeeded\"/\"failed\" mirror the run record; \"error\" means the framework could not complete the run (spawn failure, unresolvable spawn-time secret, prompt render failure). killReason present when the framework killed the run (SPEC §6).",
-      "required": ["event", "at", "runId", "agent", "signalId", "status", "exitCode", "durationMs"],
+      "description": "Terminal, exactly once per run. status \"succeeded\"/\"failed\" mirror the run record; \"interrupted\" means the container went missing while unsupervised and no exit was observed (SPEC §6.5); \"error\" means the framework could not complete the run (spawn failure, unresolvable spawn-time secret, prompt render failure). killReason present when the framework killed the run: a timeout (SPEC §6) or \"cancelled\".",
+      "required": [
+        "event",
+        "at",
+        "runId",
+        "agent",
+        "signalId",
+        "status",
+        "exitCode",
+        "durationMs"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "run.finished" },
-        "at": { "$ref": "#/$defs/at" },
-        "runId": { "type": "string" },
-        "agent": { "type": "string" },
-        "signalId": { "type": "string" },
-        "status": { "enum": ["succeeded", "failed", "error"] },
-        "exitCode": { "type": ["integer", "null"] },
-        "durationMs": { "type": ["number", "null"] },
-        "killReason": { "type": "string" },
-        "error": { "type": "string" }
+        "event": {
+          "const": "run.finished"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "signalId": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "interrupted",
+            "error"
+          ]
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "durationMs": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "killReason": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
       }
     },
     "runQueued": {
       "type": "object",
-      "description": "A matched signal waiting because its agent is at the concurrency cap (SPEC §6).",
-      "required": ["event", "at", "agent", "signalId", "signalType", "queueDepth"],
+      "description": "A matched signal waiting because its agent is at the concurrency cap (SPEC §6). Deliveries are durable: after a restart each still-pending delivery is journaled as run.queued again when it is restored.",
+      "required": [
+        "event",
+        "at",
+        "agent",
+        "signalId",
+        "signalType",
+        "queueDepth"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "run.queued" },
-        "at": { "$ref": "#/$defs/at" },
-        "agent": { "type": "string" },
-        "signalId": { "type": "string" },
-        "signalType": { "type": "string" },
-        "queueDepth": { "type": "integer", "minimum": 1 }
+        "event": {
+          "const": "run.queued"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "signalId": {
+          "type": "string"
+        },
+        "signalType": {
+          "type": "string"
+        },
+        "queueDepth": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "runSkipped": {
       "type": "object",
-      "description": "A matched signal that will never run: self-trigger refusal (SPEC §7) or dropped at shutdown.",
-      "required": ["event", "at", "agent", "signalId", "signalType", "reason"],
+      "description": "A matched signal that will never run: \"self-trigger\" refusal (SPEC §7); \"duplicate\" — its logical work identity is already queued, active, or done (SPEC §6.6); \"cancelled\" — dropped by a cancel stop; \"agent-removed\" — queued for an agent no longer defined at restart. \"shutdown\" is kept for journals written before 2.0. Optional detail names what it collided with.",
+      "required": [
+        "event",
+        "at",
+        "agent",
+        "signalId",
+        "signalType",
+        "reason"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "run.skipped" },
-        "at": { "$ref": "#/$defs/at" },
-        "agent": { "type": "string" },
-        "signalId": { "type": "string" },
-        "signalType": { "type": "string" },
-        "reason": { "enum": ["self-trigger", "shutdown"] }
+        "event": {
+          "const": "run.skipped"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "signalId": {
+          "type": "string"
+        },
+        "signalType": {
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "self-trigger",
+            "shutdown",
+            "duplicate",
+            "cancelled",
+            "agent-removed"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
       }
     },
     "retentionSwept": {
       "type": "object",
       "description": "A retention sweep pruned run directories (SPEC §12); sweeps that removed nothing are not journaled.",
-      "required": ["event", "at", "removed"],
+      "required": [
+        "event",
+        "at",
+        "removed"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "retention.swept" },
-        "at": { "$ref": "#/$defs/at" },
-        "removed": { "type": "array", "items": { "type": "string" } }
+        "event": {
+          "const": "retention.swept"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "note": {
       "type": "object",
-      "required": ["event", "at", "message"],
+      "required": [
+        "event",
+        "at",
+        "message"
+      ],
       "additionalProperties": false,
       "properties": {
-        "event": { "const": "note" },
-        "at": { "$ref": "#/$defs/at" },
-        "message": { "type": "string" }
+        "event": {
+          "const": "note"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "runDetached": {
+      "type": "object",
+      "description": "Supervision of a running container was detached for an orchestrator restart (SPEC §6.5). The container keeps running; a later orchestrator journals run.recovered for it. Not a terminal event.",
+      "required": [
+        "event",
+        "at",
+        "runId",
+        "agent",
+        "signalId"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "run.detached"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "signalId": {
+          "type": "string"
+        }
+      }
+    },
+    "runRecovered": {
+      "type": "object",
+      "description": "A restarted orchestrator reconciled a persisted run (SPEC §6.5): \"reattached\" (running, or created and now started — same run id and container), \"finalized\" (exited while unsupervised; run.finished follows), \"interrupted\" (container missing; run.finished with status interrupted follows), \"requeued\" (never started; its delivery was queued again as a new run). Never accompanied by a second run.started for the same run.",
+      "required": [
+        "event",
+        "at",
+        "runId",
+        "agent",
+        "signalId",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "run.recovered"
+        },
+        "at": {
+          "$ref": "#/$defs/at"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "signalId": {
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "reattached",
+            "finalized",
+            "interrupted",
+            "requeued"
+          ]
+        }
       }
     }
   }
