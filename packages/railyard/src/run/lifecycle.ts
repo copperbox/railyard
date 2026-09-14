@@ -125,13 +125,55 @@ function lifecyclePath(runsDir: string, runId: string): string {
   return path.join(runsDir, runId, LIFECYCLE_FILE_NAME)
 }
 
-/** Write-temp-then-rename: a crash mid-write can never leave a torn record. */
+let tmpCounter = 0
+
+/**
+ * Write-temp-then-rename: a crash mid-write can never leave a torn record.
+ * The temp name is unique per write, so two writers can never interleave
+ * inside one temp file and rename a mix of both into place.
+ */
 export async function writeLifecycleRecord(runsDir: string, record: RunLifecycleRecord): Promise<void> {
   const target = lifecyclePath(runsDir, record.runId)
   await mkdir(path.dirname(target), { recursive: true })
-  const tmp = `${target}.tmp`
+  tmpCounter += 1
+  const tmp = `${target}.${process.pid}.${tmpCounter}.tmp`
   await writeFile(tmp, JSON.stringify(record, null, 2))
   await rename(tmp, target)
+}
+
+/**
+ * The one writer a supervising process should use for a run's record. Updates
+ * are applied in call order to the *latest* record and persisted one at a
+ * time, so a phase transition and an events checkpoint racing from different
+ * timers can never overwrite each other with stale snapshots.
+ */
+export class LifecycleWriter {
+  private latest: RunLifecycleRecord
+  private chain: Promise<unknown> = Promise.resolve()
+
+  constructor(
+    private readonly runsDir: string,
+    record: RunLifecycleRecord,
+  ) {
+    this.latest = record
+  }
+
+  /** The most recent record handed out or persisted (in-memory view). */
+  get record(): RunLifecycleRecord {
+    return this.latest
+  }
+
+  /** Apply a patch to the latest record and persist it; resolves to the record as of this update. */
+  update(patch: Partial<Omit<RunLifecycleRecord, 'lifecycleVersion' | 'runId'>>): Promise<RunLifecycleRecord> {
+    const next = this.chain.then(async () => {
+      this.latest = { ...this.latest, ...patch }
+      const snapshot = this.latest
+      await writeLifecycleRecord(this.runsDir, snapshot)
+      return snapshot
+    })
+    this.chain = next.catch(() => {})
+    return next
+  }
 }
 
 /** Apply a partial update and persist; returns the new record. */

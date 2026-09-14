@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -6,6 +6,7 @@ import { stampSignal } from '../src/bus/stamp.js'
 import {
   LIFECYCLE_FILE_NAME,
   LIFECYCLE_VERSION,
+  LifecycleWriter,
   UnsupportedRecordError,
   containerNameFor,
   createRunIntent,
@@ -60,6 +61,35 @@ describe('run lifecycle records', () => {
     // The raw file is the single JSON document, no temp file left behind.
     const raw = await readFile(path.join(runsDir, record.runId, LIFECYCLE_FILE_NAME), 'utf8')
     expect(JSON.parse(raw).phase).toBe('started')
+  })
+
+  it('a writer serializes overlapping updates so neither patch is lost and the file is never torn', async () => {
+    const runsDir = await mkdtemp(path.join(tmpdir(), 'railyard-lc-'))
+    const record = intent('2026-07-19T00-00-00.000Z--echo--cccccccc')
+    await writeLifecycleRecord(runsDir, record)
+    const writer = new LifecycleWriter(runsDir, record)
+    // A phase transition and an events checkpoint race, as they do when the
+    // tailer's poll fires while docker start is being recorded.
+    const started = writer.update({ phase: 'started', startedAt: 'now', deadlineAt: 'later', watchdogPid: 77 })
+    const checkpoint = writer.update({ eventsOffset: 10, eventsConsumed: 1 })
+    const more = writer.update({ eventsOffset: 20, eventsConsumed: 2 })
+    await Promise.all([started, checkpoint, more])
+    const onDisk = (await readLifecycleRecord(runsDir, record.runId))!
+    expect(onDisk).toMatchObject({
+      phase: 'started',
+      startedAt: 'now',
+      deadlineAt: 'later',
+      watchdogPid: 77,
+      eventsOffset: 20,
+      eventsConsumed: 2,
+    })
+    expect(writer.record).toEqual(onDisk)
+    // Each update resolves to the record as of that update, in order.
+    expect((await started).eventsOffset).toBe(0)
+    expect((await checkpoint).phase).toBe('started')
+    // No temp files left behind by the overlapping writes.
+    const left = await readdir(path.join(runsDir, record.runId))
+    expect(left).toEqual([LIFECYCLE_FILE_NAME])
   })
 
   it('lists every record under runsDir, reporting unreadable ones as uncertain evidence', async () => {

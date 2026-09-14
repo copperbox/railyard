@@ -7,10 +7,7 @@ import type { EventsLine } from '../contracts/types.js'
 import { docker, dockerOk } from '../docker/cli.js'
 import { LineSplitter, type Redactor } from '../secrets/redactor.js'
 import { EventsTailer } from './events-tailer.js'
-import {
-  updateLifecycleRecord,
-  type RunLifecycleRecord,
-} from './lifecycle.js'
+import { LifecycleWriter, updateLifecycleRecord, type RunLifecycleRecord } from './lifecycle.js'
 import { readWatchdogKill, spawnWatchdog, stopWatchdog, watchdogAlive } from './watchdog.js'
 
 /** Paths inside the container; exposed to the agent via env vars (SPEC §5). */
@@ -136,7 +133,9 @@ export function makeRunId(agentName: string): string {
 
 /** Everything a supervising or finalizing step needs about one run. */
 interface RunContext {
-  lifecycle: RunLifecycleRecord
+  /** Latest record (the writer's view); persist changes only through `writer.update`. */
+  readonly lifecycle: RunLifecycleRecord
+  readonly writer: LifecycleWriter
   runsDir: string
   runDir: string
   outputDir: string
@@ -209,7 +208,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunOutcome> {
 
   try {
     await dockerOk(createArgs, `run ${runId}`, params.env ? { env: params.env } : undefined)
-    ctx.lifecycle = await updateLifecycleRecord(runsDir, ctx.lifecycle, {
+    await ctx.writer.update({
       phase: 'created',
       createdAt: new Date().toISOString(),
     })
@@ -240,7 +239,7 @@ export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
   const ctx = openRunContext(params.lifecycle, params.runsDir, params.redactor, params.control ?? {}, params, {
     resume: true,
   })
-  ctx.lifecycle = await updateLifecycleRecord(params.runsDir, ctx.lifecycle, { detachedAt: null })
+  await ctx.writer.update({ detachedAt: null })
   try {
     await ctx.tailer.start()
     if (observation.state === 'created') {
@@ -254,7 +253,7 @@ export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
         onStderrChunk: (chunk) => writeLogChunk(ctx, 'stderr', chunk),
       })
       const exitCode = observation.exitCode ?? -1
-      ctx.lifecycle = await updateLifecycleRecord(params.runsDir, ctx.lifecycle, {
+      await ctx.writer.update({
         phase: 'exited',
         exitCode,
         exitedAt: observation.finishedAt ?? new Date().toISOString(),
@@ -273,7 +272,7 @@ export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
 async function suspend(ctx: RunContext): Promise<void> {
   await ctx.tailer.stop({ final: false }).catch(() => {})
   await endLog(ctx).catch(() => {})
-  await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, { detachedAt: new Date().toISOString() }).catch(() => {})
+  await ctx.writer.update({ detachedAt: new Date().toISOString() }).catch(() => {})
 }
 
 /**
@@ -422,6 +421,7 @@ function openRunContext(
 ): RunContext {
   const runDir = path.join(runsDir, lifecycle.runId)
   const eventsFile = path.join(runDir, 'events.jsonl')
+  const writer = new LifecycleWriter(runsDir, lifecycle)
   const tailer = new EventsTailer(
     eventsFile,
     {
@@ -429,10 +429,7 @@ function openRunContext(
       onMalformed: handlers.onMalformedEvent ?? (() => {}),
       onError: handlers.onEventError ?? (() => {}),
       onCheckpoint: async (offset, consumed) => {
-        ctx.lifecycle = await updateLifecycleRecord(runsDir, ctx.lifecycle, {
-          eventsOffset: offset,
-          eventsConsumed: consumed,
-        })
+        await writer.update({ eventsOffset: offset, eventsConsumed: consumed })
       },
     },
     options.resume
@@ -443,7 +440,10 @@ function openRunContext(
   // capture rewrites agent.log whole — complete, and redacted with the
   // current redactor.
   const ctx: RunContext = {
-    lifecycle,
+    get lifecycle() {
+      return writer.record
+    },
+    writer,
     runsDir,
     runDir,
     outputDir: path.join(runDir, 'output'),
@@ -473,7 +473,7 @@ async function startContainer(ctx: RunContext): Promise<void> {
   const timeoutSeconds = ctx.lifecycle.timeoutSeconds
   const deadlineAt =
     timeoutSeconds === null ? null : new Date(startedAt.getTime() + timeoutSeconds * 1000)
-  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {
+  await ctx.writer.update({
     phase: 'started',
     startedAt: startedAt.toISOString(),
     deadlineAt: deadlineAt?.toISOString() ?? null,
@@ -494,7 +494,7 @@ async function ensureWatchdog(ctx: RunContext): Promise<void> {
     deadlineAt: deadline,
     timeoutSeconds: lc.timeoutSeconds,
   })
-  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, lc, { watchdogPid: pid })
+  await ctx.writer.update({ watchdogPid: pid })
 }
 
 /**
@@ -562,7 +562,7 @@ async function supervise(ctx: RunContext): Promise<RunOutcome> {
   if (killTimer !== undefined) clearTimeout(killTimer)
   // If a kill is in flight, learn whether it actually landed before we record.
   await killDone?.catch(() => {})
-  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {
+  await ctx.writer.update({
     phase: 'exited',
     exitCode,
     exitedAt: new Date().toISOString(),
@@ -578,7 +578,7 @@ async function detach(ctx: RunContext, killTimer: NodeJS.Timeout | undefined): P
   await ctx.tailer.stop({ final: false }).catch(() => {})
   const { offset, consumed } = ctx.tailer.checkpoint
   await endLog(ctx)
-  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {
+  await ctx.writer.update({
     eventsOffset: offset,
     eventsConsumed: consumed,
     detachedAt: new Date().toISOString(),
@@ -630,7 +630,7 @@ async function finalize(ctx: RunContext, exitCode: number, killReason: string | 
     killReason,
   }
   await writeFile(path.join(ctx.runDir, 'result.json'), JSON.stringify(record, null, 2))
-  ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, lc, {
+  await ctx.writer.update({
     phase: 'finalized',
     finalizedAt: record.finishedAt,
     outcome: record,
@@ -657,11 +657,13 @@ async function abandon(ctx: RunContext, err: unknown): Promise<void> {
   await endLog(ctx).catch(() => {})
   await stopWatchdog(lc.watchdogPid, lc.containerName).catch(() => {})
   await docker(['rm', '-f', lc.containerName]).catch(() => {})
-  await updateLifecycleRecord(ctx.runsDir, lc, {
-    phase: 'finalized',
-    finalizedAt: new Date().toISOString(),
-    error: String((err as Error).message ?? err),
-  }).catch(() => {})
+  await ctx.writer
+    .update({
+      phase: 'finalized',
+      finalizedAt: new Date().toISOString(),
+      error: String((err as Error).message ?? err),
+    })
+    .catch(() => {})
 }
 
 /**
