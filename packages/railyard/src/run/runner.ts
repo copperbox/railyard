@@ -69,6 +69,8 @@ export interface RunSupervisionHandlers {
    */
   onEvent: (line: EventsLine, index: number) => void | Promise<void>
   onMalformedEvent?: (raw: string, reason: string) => void
+  /** Delivering an events line failed and will be retried (see EventsTailerHandlers.onError). */
+  onEventError?: (err: unknown) => void
 }
 
 export interface RunAgentParams extends RunSupervisionHandlers {
@@ -225,6 +227,10 @@ export async function runAgent(params: RunAgentParams): Promise<RunOutcome> {
  * deadline counts from this start); `running` ones are reattached with the
  * original deadline (and a watchdog respawned if the old one is gone);
  * `exited` ones are finalized from what the backend and the run dir hold.
+ *
+ * A failure here is *not* a failure of the run: the container was just
+ * observed alive (or exited with its output intact), so nothing is removed —
+ * the record is left detached for the next start to try again.
  */
 export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
   const observation = await observeRun(params.lifecycle)
@@ -257,10 +263,17 @@ export async function resumeRun(params: ResumeRunParams): Promise<RunOutcome> {
       return { kind: 'finished', record: await finalize(ctx, exitCode, watchdogKill?.reason ?? null) }
     }
   } catch (err) {
-    await abandon(ctx, err)
+    await suspend(ctx)
     throw err
   }
   return supervise(ctx)
+}
+
+/** Resuming failed: let go without touching the container; leave a resumable record. */
+async function suspend(ctx: RunContext): Promise<void> {
+  await ctx.tailer.stop({ final: false }).catch(() => {})
+  await endLog(ctx).catch(() => {})
+  await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, { detachedAt: new Date().toISOString() }).catch(() => {})
 }
 
 /**
@@ -414,6 +427,7 @@ function openRunContext(
     {
       onLine: handlers.onEvent,
       onMalformed: handlers.onMalformedEvent ?? (() => {}),
+      onError: handlers.onEventError ?? (() => {}),
       onCheckpoint: async (offset, consumed) => {
         ctx.lifecycle = await updateLifecycleRecord(runsDir, ctx.lifecycle, {
           eventsOffset: offset,

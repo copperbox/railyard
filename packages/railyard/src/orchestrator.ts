@@ -132,6 +132,8 @@ interface ActiveRun {
   signal: SignalEnvelope
   detach: AbortController
   cancel: AbortController
+  /** Picked up by recovery rather than launched here: a failure to supervise is not a failure of the run. */
+  resumed: boolean
 }
 
 type Phase = 'idle' | 'booting' | 'started' | 'stopping' | 'stopped'
@@ -463,10 +465,16 @@ export class Orchestrator {
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight])
     }
+    // From here on an emission can no longer be made durable by this process:
+    // emitters are refused (loudly) rather than silently dropped by a stopped
+    // transport. Routes already under way are still seen through.
+    this.phase = 'stopped'
     await this.transport.stop()
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight])
+    }
     await this.ledger.flush()
     await this.journal.flush()
-    this.phase = 'stopped'
     // Released last: nothing may touch the owned directories after this point.
     await this.releaseDirLocks()
     this.logger.info(`stopped (${mode})`)
@@ -507,6 +515,12 @@ export class Orchestrator {
       this.record({ event: 'signal.dropped', reason, signalType: draft.type, source })
       throw new Error(reason)
     }
+    if (this.phase === 'stopped') {
+      // Too late to journal or queue: the directories are flushed and released.
+      const reason = `orchestrator is stopped: ${source.kind} "${source.name}" emission "${draft.type}" was not accepted`
+      this.logger.warn(reason)
+      throw new Error(reason)
+    }
     // Depth limit (SPEC §7): only agent emissions can hit this — monitor chains are empty.
     if (provenance.length > this.maxChainDepth) {
       fail(
@@ -542,9 +556,12 @@ export class Orchestrator {
       .then(() => this.routeInner(signal))
       .finally(() => {
         this.pendingRoutes.delete(signal.id)
+        this.inFlight.delete(done)
       })
     this.routing = done.catch(() => {})
     this.pendingRoutes.set(signal.id, done)
+    // Tracked so stop() sees every accepted delivery land before releasing ownership.
+    this.inFlight.add(done)
     return done
   }
 
@@ -621,7 +638,7 @@ export class Orchestrator {
    * refused duplicate is journaled with what it collided with.
    */
   private async accept(agent: LoadedAgent, signal: SignalEnvelope): Promise<boolean> {
-    if (this.phase === 'stopped' || (this.phase === 'stopping' && this.stopMode === 'cancel')) {
+    if (this.stopMode === 'cancel') {
       this.record({
         event: 'run.skipped',
         agent: agent.name,
@@ -815,6 +832,11 @@ export class Orchestrator {
           message: `run ${runId}: malformed events line (${reason}): ${raw.slice(0, 200)}`,
         })
       },
+      onEventError: (err) => {
+        const message = `run ${runId}: events delivery failed, retrying from the last checkpoint: ${String((err as Error).message ?? err)}`
+        this.logger.warn(message)
+        this.record({ event: 'note', message })
+      },
     }
   }
 
@@ -891,6 +913,21 @@ export class Orchestrator {
         })
       })
       .catch(async (err: unknown) => {
+        if (active.resumed) {
+          // Recovery could not pick the run up. Its container was just
+          // observed alive (or exited with its output on disk), so it is not
+          // finished and nothing is removed: report, leave the record
+          // detached, and let the next start try again.
+          detached = true
+          const message =
+            `run ${runId}: could not resume supervision: ${String((err as Error).message ?? err)}; ` +
+            `the container and its record are left untouched and will be retried at the next start`
+          this.logger.error(message)
+          this.record({ event: 'note', message })
+          await this.markDetached(runId)
+          this.record({ event: 'run.detached', runId, agent, signalId: signal.id })
+          return
+        }
         await this.finishRun(active, {
           status: 'error',
           exitCode: null,
@@ -926,6 +963,18 @@ export class Orchestrator {
     await this.queue.remove(agent, signal.id)
     await this.ledger.flush()
     await this.closeLifecycle(runId)
+  }
+
+  /** Leave a run's record detached (resumable) after supervision was lost without an outcome. */
+  private async markDetached(runId: string): Promise<void> {
+    try {
+      const record = await readLifecycleRecord(this.runsDir, runId)
+      if (record !== null && record.phase !== 'finalized' && record.phase !== 'closed' && record.detachedAt === null) {
+        await updateLifecycleRecord(this.runsDir, record, { detachedAt: new Date().toISOString() })
+      }
+    } catch (err) {
+      this.logger.warn(`run ${runId}: could not mark lifecycle record detached: ${String(err)}`)
+    }
   }
 
   /** Mark a finalized record closed: its terminal journal entry is on disk. */
@@ -1114,7 +1163,7 @@ export class Orchestrator {
     })
     const state = this.runStateFor(record.agent)
     state.active += 1
-    const active = newActiveRun(record.runId, record.agent, record.signal)
+    const active = newActiveRun(record.runId, record.agent, record.signal, true)
     this.activeRuns.set(record.runId, active)
     this.ledger.setStatus(record.agent, record.signal.id, 'active', record.runId)
     const outcome = this.executor.resume({
@@ -1212,8 +1261,8 @@ function deliveryKey(agent: string, signalId: string): string {
   return `${agent}\u0000${signalId}`
 }
 
-function newActiveRun(runId: string, agent: string, signal: SignalEnvelope): ActiveRun {
-  return { runId, agent, signal, detach: new AbortController(), cancel: new AbortController() }
+function newActiveRun(runId: string, agent: string, signal: SignalEnvelope, resumed = false): ActiveRun {
+  return { runId, agent, signal, detach: new AbortController(), cancel: new AbortController(), resumed }
 }
 
 function redactingLogger(base: Logger, redactor: Redactor): Logger {

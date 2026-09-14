@@ -20,6 +20,12 @@ export interface EventsTailerHandlers {
    * replaying handled events.
    */
   onCheckpoint?: (offset: number, consumed: number) => void | Promise<void>
+  /**
+   * `onLine` rejected (durable acceptance of a child signal failed) or the
+   * file could not be read. The tailer rewinds to the failing line and retries
+   * on its next poll; nothing is skipped. Reported once per failure streak.
+   */
+  onError?: (err: unknown) => void
 }
 
 export interface EventsTailerOptions {
@@ -52,6 +58,7 @@ export class EventsTailer {
   private consumed: number
   private timer: NodeJS.Timeout | null = null
   private draining: Promise<void> = Promise.resolve()
+  private failing = false
   private readonly pollMs: number
 
   constructor(
@@ -74,7 +81,8 @@ export class EventsTailer {
     this.handle = await open(this.filePath, 'r')
     this.timer = setInterval(() => {
       // Serialize drains so a slow read can't interleave with the next poll.
-      this.draining = this.draining.then(() => this.drain())
+      // A failed drain must not poison the chain: the next poll retries.
+      this.draining = this.draining.then(() => this.drain()).catch((err: unknown) => this.report(err))
     }, this.pollMs)
   }
 
@@ -99,6 +107,8 @@ export class EventsTailer {
     if (!this.handle) return
     const { size } = await this.handle.stat()
     let delivered = false
+    // Byte offset of the next line to emit; only complete, handled lines move it.
+    let lineStart = this.checkpoint.offset
     while (this.position < size) {
       const length = Math.min(size - this.position, 64 * 1024)
       const buffer = Buffer.alloc(length)
@@ -110,15 +120,35 @@ export class EventsTailer {
       this.remainder = lines.pop() ?? ''
       for (const line of lines) {
         if (line.trim() !== '') {
-          await this.emit(line)
+          try {
+            await this.emit(line)
+          } catch (err) {
+            // Rewind to this line: it is re-read and re-emitted on the next
+            // poll, with the same index, after the lines before it are
+            // checkpointed. Nothing is skipped, nothing is duplicated.
+            this.consumed -= 1
+            this.position = lineStart
+            this.remainder = ''
+            if (delivered) await this.handlers.onCheckpoint?.(lineStart, this.consumed)
+            this.report(err)
+            return
+          }
           delivered = true
         }
+        lineStart += Buffer.byteLength(line, 'utf8') + 1
       }
     }
+    this.failing = false
     if (delivered) {
       const { offset, consumed } = this.checkpoint
       await this.handlers.onCheckpoint?.(offset, consumed)
     }
+  }
+
+  private report(err: unknown): void {
+    if (this.failing) return
+    this.failing = true
+    this.handlers.onError?.(err)
   }
 
   private async emit(raw: string): Promise<void> {

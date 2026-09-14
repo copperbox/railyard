@@ -122,6 +122,45 @@ describe('EventsTailer checkpoints and resume', () => {
     await second.stop()
   })
 
+  it('a rejected onLine is reported and retried from the last checkpoint; later lines are not lost', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'railyard-tail-'))
+    const file = path.join(dir, 'events.jsonl')
+    await writeFile(file, '')
+    const seen: Array<[number, unknown]> = []
+    const errors: string[] = []
+    const checkpoints: Array<[number, number]> = []
+    let failOnce = true
+    const tailer = new EventsTailer(
+      file,
+      {
+        onLine: async (line, index) => {
+          if (failOnce) {
+            failOnce = false
+            throw new Error('ENOSPC: durable acceptance failed')
+          }
+          seen.push([index, line])
+        },
+        onMalformed: () => {},
+        onCheckpoint: (offset, consumed) => {
+          checkpoints.push([offset, consumed])
+        },
+        onError: (err) => {
+          errors.push(String((err as Error).message))
+        },
+      },
+      20,
+    )
+    await tailer.start()
+    const l0 = '{"kind":"log","message":"zero"}\n'
+    const l1 = '{"kind":"log","message":"one"}\n'
+    await appendFile(file, l0 + l1)
+    await vi.waitFor(() => expect(seen).toHaveLength(2))
+    expect(seen.map(([i, l]) => [i, (l as { message: string }).message])).toEqual([[0, 'zero'], [1, 'one']])
+    expect(errors).toEqual(['ENOSPC: durable acceptance failed'])
+    await vi.waitFor(() => expect(checkpoints.at(-1)).toEqual([Buffer.byteLength(l0 + l1), 2]))
+    await tailer.stop()
+  })
+
   it('awaits an async onLine before advancing the checkpoint', async () => {
     const { file, tailer } = await makeTailer()
     await tailer.stop()

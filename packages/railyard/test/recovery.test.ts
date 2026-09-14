@@ -100,6 +100,8 @@ class SimulatedExecutor implements AgentExecutor {
   resumed: ResumeRunParams[] = []
   /** Test seam: hold image preparation (a slow docker build/pull) until released. */
   readyGate: Promise<void> = Promise.resolve()
+  /** Test seam: make the next N resume() calls fail (a transient backend/filesystem error). */
+  failResumes = 0
 
   constructor(readonly backend: FakeBackend) {}
 
@@ -147,6 +149,10 @@ class SimulatedExecutor implements AgentExecutor {
 
   async resume(params: ResumeRunParams): Promise<RunOutcome> {
     this.resumed.push(params)
+    if (this.failResumes > 0) {
+      this.failResumes -= 1
+      throw new Error('simulated: events.jsonl unreadable')
+    }
     const { runsDir } = params
     let lc = await updateLifecycleRecord(runsDir, params.lifecycle, { detachedAt: null })
     const c = this.backend.containers.get(lc.containerName)
@@ -643,6 +649,32 @@ describe('shutdown modes and repeated requests (SPEC §6.5)', () => {
     expect(await new DurableQueue(h.runsDir).load()).toHaveLength(1)
   })
 
+  it('a monitor emission that lands while stopping is fully durable before ownership is released', async () => {
+    const h = await harness()
+    const o = h.boot()
+    let ctx: MonitorContext | undefined
+    o.orchestrator.register({
+      name: 'late',
+      emits: [{ type: 'demo.tick', payloadSchema: TICK_SCHEMA }],
+      async start(c: MonitorContext) {
+        ctx = c
+      },
+      async stop() {
+        // Fire-and-forget from inside stop(): the orchestrator must still see it through.
+        ctx!.emit({ type: 'demo.tick', payload: { n: 9 } })
+      },
+    })
+    await o.orchestrator.start()
+    await o.orchestrator.stop()
+    expect(o.of('run.queued')).toHaveLength(1)
+    const signalId = o.of('run.queued')[0]!.signalId
+    expect(await new DurableQueue(h.runsDir).load()).toHaveLength(1)
+    expect(await readFile(path.join(h.runsDir, 'ledger.json'), 'utf8')).toContain(signalId)
+    expect((await h.journal()).some((e) => e.event === 'run.queued' && e.signalId === signalId)).toBe(true)
+    // After stop has completed there is no owner left to accept anything: the emitter is told.
+    expect(() => ctx!.emit({ type: 'demo.tick', payload: { n: 10 } })).toThrow(/stopped/)
+  })
+
   it('detach reaches a run whose launch is still resolving secrets: it detaches instead of being waited for', { timeout: 5000 }, async () => {
     const h = await harness({ needy: { manifest: 'name: needy\nsecrets: [TOKEN]\non:\n  - type: demo.tick\n' } })
     // Boot resolves immediately; the spawn-time resolution blocks until released,
@@ -1061,6 +1093,39 @@ describe('safety under uncertainty (SPEC §6.5)', () => {
     await expect(o.orchestrator.start()).rejects.toThrow(/queued delivery version 99 is not supported/)
     expect(h.backend.containers.has('railyard--orphan')).toBe(true)
     expect(await readdir(h.runsDir)).toContain(stale)
+  })
+
+  it('a reattach that fails leaves the container and record untouched, reports it, and the next start tries again', async () => {
+    const h = await harness()
+    const a = h.boot()
+    await a.orchestrator.start()
+    a.monitor.emit({ n: 1 })
+    const runId = await firstRunId(a)
+    await a.orchestrator.stop({ mode: 'detach' })
+
+    const executor = new SimulatedExecutor(h.backend)
+    executor.failResumes = 1
+    const b = h.boot({ executor })
+    await b.orchestrator.start()
+    await vi.waitFor(() => expect(b.of('run.detached').map((e) => e.runId)).toEqual([runId]))
+    expect(b.of('run.finished')).toHaveLength(0)
+    expect(b.of('note').some((n) => n.message.includes(runId) && /could not resume/.test(n.message))).toBe(true)
+    expect(h.backend.byRun(runId).state).toBe('running')
+    // Its slot is free again: new work for the agent is not blocked behind it.
+    b.monitor.emit({ n: 2 })
+    await vi.waitFor(() => expect(b.executor.calls).toHaveLength(1))
+    h.backend.exit(b.executor.calls[0]!.lifecycle.runId, 0)
+    await b.orchestrator.stop()
+    const record = (await readLifecycleRecord(h.runsDir, runId))!
+    expect(record.phase).toBe('started')
+    expect(record.detachedAt).not.toBeNull()
+
+    const c = h.boot()
+    await c.orchestrator.start()
+    expect(c.of('run.recovered')).toEqual([expect.objectContaining({ runId, outcome: 'reattached' })])
+    h.backend.exit(runId, 0)
+    await vi.waitFor(() => expect(c.of('run.finished').map((e) => e.runId)).toEqual([runId]))
+    await c.orchestrator.stop()
   })
 
   it('aggressive retention never removes an active, detached, or unreadable run', async () => {
