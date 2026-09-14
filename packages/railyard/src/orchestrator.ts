@@ -171,6 +171,8 @@ export class Orchestrator {
   private readonly protectedRuns = new Set<string>()
   /** Routing in progress per signal id, so an emitter can wait for durable acceptance. */
   private readonly pendingRoutes = new Map<string, Promise<void>>()
+  /** Signal id → run whose events line carried it, for the ids about to be routed. */
+  private readonly signalOrigins = new Map<string, string>()
   private routing: Promise<void> = Promise.resolve()
   /** (agent, signalId) → runId for every persisted run seen at boot, closed or not. */
   private readonly recoveredRuns = new Map<string, string>()
@@ -626,7 +628,8 @@ export class Orchestrator {
         break
       }
     }
-    this.ledger.noteSignal(signal.id)
+    this.ledger.noteSignal(signal.id, new Date(), this.signalOrigins.get(signal.id) ?? null)
+    this.signalOrigins.delete(signal.id)
     await this.ledger.flush()
     for (const agent of accepted) this.admit(agent, signal)
   }
@@ -793,7 +796,11 @@ export class Orchestrator {
       activeRunIds: new Set([...this.activeRuns.keys(), ...this.protectedRuns]),
     })
     if (removed.length > 0) this.record({ event: 'retention.swept', removed })
-    this.ledger.prune(this.recovery.ledgerRetentionDays * 24 * 60 * 60 * 1000)
+    this.ledger.prune(
+      this.recovery.ledgerRetentionDays * 24 * 60 * 60 * 1000,
+      new Date(),
+      new Set([...this.activeRuns.keys(), ...this.protectedRuns]),
+    )
     await this.ledger.flush()
   }
 
@@ -808,6 +815,7 @@ export class Orchestrator {
       onEvent: async (line, index) => {
         if (line.kind === 'signal') {
           const id = deterministicSignalId(runId, index)
+          this.signalOrigins.set(id, runId)
           try {
             this.emitSignal(
               agentSource,
@@ -818,6 +826,7 @@ export class Orchestrator {
             )
           } catch {
             // Already journaled as signal.dropped; must not kill the tailer.
+            this.signalOrigins.delete(id)
             return
           }
           // Hold the events checkpoint until the deliveries are durable.

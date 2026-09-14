@@ -89,6 +89,22 @@ describe('WorkLedger', () => {
     expect(ledger.findWork('echo', { key: 'active' })).toBeDefined()
   })
 
+  it('keeps the signal ids of a still-active run past the window: its events lines can still be replayed', async () => {
+    const { ledger } = await fresh()
+    const old = new Date('2026-01-01T00:00:00.000Z')
+    const child = sig({ step: 0 })
+    const other = sig({ step: 1 })
+    ledger.noteSignal(child.id, old, 'run-long')
+    ledger.noteSignal(other.id, old, 'run-done')
+    const removed = ledger.prune(24 * 3600 * 1000, new Date('2026-02-01T00:00:00.000Z'), new Set(['run-long']))
+    expect(removed).toBe(1)
+    expect(ledger.hasSignal(child.id)).toBe(true)
+    expect(ledger.hasSignal(other.id)).toBe(false)
+    // Once its run is no longer active, the id expires like any other.
+    expect(ledger.prune(24 * 3600 * 1000, new Date('2026-02-01T00:00:00.000Z'), new Set())).toBe(1)
+    expect(ledger.hasSignal(child.id)).toBe(false)
+  })
+
   it('refuses an unsupported ledger version', async () => {
     const { runsDir } = await fresh()
     await writeFile(path.join(runsDir, LEDGER_FILE_NAME), JSON.stringify({ ledgerVersion: 7 }))

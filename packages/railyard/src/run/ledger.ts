@@ -50,7 +50,8 @@ export interface WorkEntry {
 
 interface LedgerData {
   ledgerVersion: typeof LEDGER_VERSION
-  signals: Record<string, { at: string }>
+  /** Routed signal ids; `runId` = the run whose events line carried it (agent emissions only). */
+  signals: Record<string, { at: string; runId?: string }>
   deliveries: Record<string, DeliveryEntry>
   work: Record<string, WorkEntry>
 }
@@ -113,9 +114,15 @@ export class WorkLedger {
     return signalId in this.data.signals
   }
 
-  noteSignal(signalId: string, now = new Date()): void {
+  /**
+   * Remember a routed signal id. For an agent emission, `runId` names the run
+   * whose events line carried it, so the id is kept for as long as that run is
+   * active — however long that is — and a rewound checkpoint can still be told
+   * from a new emission.
+   */
+  noteSignal(signalId: string, now = new Date(), runId: string | null = null): void {
     if (this.hasSignal(signalId)) return
-    this.data.signals[signalId] = { at: now.toISOString() }
+    this.data.signals[signalId] = { at: now.toISOString(), ...(runId !== null ? { runId } : {}) }
     this.dirty = true
   }
 
@@ -206,11 +213,16 @@ export class WorkLedger {
     this.dirty = true
   }
 
-  /** Expire done entries (and signal ids) older than the window. Returns how many went. */
-  prune(retentionMs: number, now = new Date()): number {
+  /**
+   * Expire done entries (and signal ids) older than the window. Signal ids
+   * carried by a run in `activeRunIds` are kept regardless of age. Returns how
+   * many went.
+   */
+  prune(retentionMs: number, now = new Date(), activeRunIds: ReadonlySet<string> = new Set()): number {
     const cutoff = now.getTime() - retentionMs
     let removed = 0
-    for (const [id, { at }] of Object.entries(this.data.signals)) {
+    for (const [id, { at, runId }] of Object.entries(this.data.signals)) {
+      if (runId !== undefined && activeRunIds.has(runId)) continue
       if (Date.parse(at) < cutoff) {
         delete this.data.signals[id]
         removed += 1
