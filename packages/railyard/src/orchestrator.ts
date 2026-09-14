@@ -35,6 +35,7 @@ import { renderPromptTemplate } from './prompt/template.js'
 import {
   makeRunId,
   recordInterruptedRun,
+  type RunObservation,
   type RunOutcome,
   type RunRecord,
   type RunSupervisionHandlers,
@@ -797,13 +798,7 @@ export class Orchestrator {
   private launch(agent: LoadedAgent, signal: SignalEnvelope, state: AgentRunState): void {
     state.active += 1
     const runId = makeRunId(agent.name)
-    const active: ActiveRun = {
-      runId,
-      agent: agent.name,
-      signal,
-      detach: new AbortController(),
-      cancel: new AbortController(),
-    }
+    const active = newActiveRun(runId, agent.name, signal)
     this.record({ event: 'run.started', runId, agent: agent.name, signalId: signal.id })
 
     const outcome = Promise.resolve().then(async (): Promise<RunOutcome> => {
@@ -965,89 +960,13 @@ export class Orchestrator {
     let reattached = 0
     for (const record of open) {
       if (record.phase === 'finalized') continue
-      let observation
-      try {
-        observation = await this.executor.observe(record)
-      } catch (err) {
-        throw new Error(
-          `recovery: cannot determine the state of run ${record.runId} (container ` +
-            `${record.containerName}): ${String((err as Error).message ?? err)}. Nothing has been ` +
-            `changed. Make the container backend reachable and start again; if the run is known to ` +
-            `be gone, remove its lifecycle.json to have it recorded as interrupted.`,
-        )
-      }
-      const base = { runId: record.runId, agent: record.agent, signalId: record.signal.id }
+      const observation = await this.observeForRecovery(record)
       if (observation.state === 'missing') {
-        const neverStarted = record.phase === 'intent' || record.phase === 'created'
-        const agent = this.agents.find((a) => a.name === record.agent)
-        if (neverStarted && this.recovery.requeueUnstarted && agent !== undefined) {
-          this.record({ event: 'run.recovered', ...base, outcome: 'requeued' })
-          const reason = 'container never started before supervision was lost; delivery requeued'
-          const result = await recordInterruptedRun(this.runsDir, record, reason)
-          this.record({
-            event: 'run.finished',
-            ...base,
-            status: 'interrupted',
-            exitCode: null,
-            durationMs: result.durationMs,
-            error: reason,
-          })
-          await this.journal.flush()
-          await this.closeLifecycle(record.runId)
-          // Same delivery, new attempt at running it: back to the durable queue.
-          await this.queue.accept(record.agent, record.signal)
-          this.ledger.setStatus(record.agent, record.signal.id, 'queued', null)
-          this.recoveredRuns.delete(deliveryKey(record.agent, record.signal.id))
-        } else {
-          this.record({ event: 'run.recovered', ...base, outcome: 'interrupted' })
-          const reason =
-            record.phase === 'started'
-              ? 'container missing on recovery; no exit was observed'
-              : 'container never started and its delivery was not requeued'
-          const result = await recordInterruptedRun(this.runsDir, record, reason)
-          this.record({
-            event: 'run.finished',
-            ...base,
-            status: 'interrupted',
-            exitCode: null,
-            durationMs: result.durationMs,
-            error: reason,
-          })
-          await this.journal.flush()
-          this.ledger.setStatus(record.agent, record.signal.id, 'done', record.runId)
-          await this.queue.remove(record.agent, record.signal.id)
-          await this.closeLifecycle(record.runId)
-        }
+        await this.recoverMissingRun(record)
         continue
       }
-      // Live (or exited-but-uncollected): the redactor learns the values the
-      // container actually holds, so rotated credentials still get scrubbed.
-      for (const [name, value] of Object.entries(observation.secrets)) this.registerSecret(name, value)
-      this.record({
-        event: 'run.recovered',
-        ...base,
-        outcome: observation.state === 'exited' ? 'finalized' : 'reattached',
-      })
-      const state = this.runStateFor(record.agent)
-      state.active += 1
+      this.reattachRun(record, observation)
       reattached += 1
-      const active: ActiveRun = {
-        runId: record.runId,
-        agent: record.agent,
-        signal: record.signal,
-        detach: new AbortController(),
-        cancel: new AbortController(),
-      }
-      this.activeRuns.set(record.runId, active)
-      this.ledger.setStatus(record.agent, record.signal.id, 'active', record.runId)
-      const outcome = this.executor.resume({
-        lifecycle: record,
-        runsDir: this.runsDir,
-        redactor: this.redactor,
-        control: { detach: active.detach.signal, cancel: active.cancel.signal },
-        ...this.handlersFor(record.runId, record.agent, record.signal),
-      })
-      this.track(active, state, outcome)
     }
     await this.ledger.flush()
     if (reattached > 0) {
@@ -1063,6 +982,99 @@ export class Orchestrator {
     if (swept.length > 0) {
       this.record({ event: 'note', message: `boot sweep removed ${swept.length} orphaned container(s)` })
     }
+  }
+
+  /** Ask the backend about a persisted run; an unanswerable backend fails boot with an actionable message. */
+  private async observeForRecovery(record: RunLifecycleRecord): Promise<RunObservation> {
+    try {
+      return await this.executor.observe(record)
+    } catch (err) {
+      throw new Error(
+        `recovery: cannot determine the state of run ${record.runId} (container ` +
+          `${record.containerName}): ${String((err as Error).message ?? err)}. Nothing has been ` +
+          `changed. Make the container backend reachable and start again; if the run is known to ` +
+          `be gone, remove its lifecycle.json to have it recorded as interrupted.`,
+      )
+    }
+  }
+
+  /**
+   * A persisted run whose container is gone: record it interrupted and close
+   * it out. A container that never started may go back to the durable queue
+   * (RecoveryPolicy.requeueUnstarted); one that had started is never retried
+   * automatically.
+   */
+  private async recoverMissingRun(record: RunLifecycleRecord): Promise<void> {
+    const base = { runId: record.runId, agent: record.agent, signalId: record.signal.id }
+    const neverStarted = record.phase === 'intent' || record.phase === 'created'
+    const agentDefined = this.agents.some((a) => a.name === record.agent)
+    if (neverStarted && this.recovery.requeueUnstarted && agentDefined) {
+      this.record({ event: 'run.recovered', ...base, outcome: 'requeued' })
+      await this.recordInterrupted(
+        record,
+        'container never started before supervision was lost; delivery requeued',
+      )
+      await this.closeLifecycle(record.runId)
+      // Same delivery, new attempt at running it: back to the durable queue.
+      await this.queue.accept(record.agent, record.signal)
+      this.ledger.setStatus(record.agent, record.signal.id, 'queued', null)
+      this.recoveredRuns.delete(deliveryKey(record.agent, record.signal.id))
+      return
+    }
+    this.record({ event: 'run.recovered', ...base, outcome: 'interrupted' })
+    const reason =
+      record.phase === 'started'
+        ? 'container missing on recovery; no exit was observed'
+        : 'container never started and its delivery was not requeued'
+    await this.recordInterrupted(record, reason)
+    this.ledger.setStatus(record.agent, record.signal.id, 'done', record.runId)
+    await this.queue.remove(record.agent, record.signal.id)
+    await this.closeLifecycle(record.runId)
+  }
+
+  /** Write the interrupted result.json and journal its terminal entry, durably. */
+  private async recordInterrupted(record: RunLifecycleRecord, reason: string): Promise<void> {
+    const result = await recordInterruptedRun(this.runsDir, record, reason)
+    this.record({
+      event: 'run.finished',
+      runId: record.runId,
+      agent: record.agent,
+      signalId: record.signal.id,
+      status: 'interrupted',
+      exitCode: null,
+      durationMs: result.durationMs,
+      error: reason,
+    })
+    await this.journal.flush()
+  }
+
+  /**
+   * Resume supervising a live (or exited-but-uncollected) container, restoring
+   * its concurrency slot. The redactor learns the values the container
+   * actually holds, so rotated credentials still get scrubbed.
+   */
+  private reattachRun(record: RunLifecycleRecord, observation: RunObservation): void {
+    for (const [name, value] of Object.entries(observation.secrets)) this.registerSecret(name, value)
+    this.record({
+      event: 'run.recovered',
+      runId: record.runId,
+      agent: record.agent,
+      signalId: record.signal.id,
+      outcome: observation.state === 'exited' ? 'finalized' : 'reattached',
+    })
+    const state = this.runStateFor(record.agent)
+    state.active += 1
+    const active = newActiveRun(record.runId, record.agent, record.signal)
+    this.activeRuns.set(record.runId, active)
+    this.ledger.setStatus(record.agent, record.signal.id, 'active', record.runId)
+    const outcome = this.executor.resume({
+      lifecycle: record,
+      runsDir: this.runsDir,
+      redactor: this.redactor,
+      control: { detach: active.detach.signal, cancel: active.cancel.signal },
+      ...this.handlersFor(record.runId, record.agent, record.signal),
+    })
+    this.track(active, state, outcome)
   }
 
   /** Journal the terminal entry a finalized record already holds. */
@@ -1151,6 +1163,10 @@ export class Orchestrator {
 
 function deliveryKey(agent: string, signalId: string): string {
   return `${agent}\u0000${signalId}`
+}
+
+function newActiveRun(runId: string, agent: string, signal: SignalEnvelope): ActiveRun {
+  return { runId, agent, signal, detach: new AbortController(), cancel: new AbortController() }
 }
 
 function redactingLogger(base: Logger, redactor: Redactor): Logger {

@@ -87,7 +87,7 @@ export class EventsTailer {
     await this.drain()
     if (final && this.remainder.trim() !== '') {
       await this.emit(this.remainder)
-      this.position = this.position // already counted; the remainder is now consumed
+      // position already counts the remainder's bytes; it is consumed now.
       this.remainder = ''
       await this.handlers.onCheckpoint?.(this.position, this.consumed)
     }

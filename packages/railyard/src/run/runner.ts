@@ -1,5 +1,5 @@
 import { createWriteStream, type WriteStream } from 'node:fs'
-import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { LoadedAgent } from '../agents/loader.js'
 import { newRunId } from '../contracts/id.js'
@@ -286,13 +286,7 @@ export async function observeRun(lifecycle: RunLifecycleRecord): Promise<RunObse
   } catch (err) {
     throw new BackendUnavailableError(`unparsable inspect output: ${(err as Error).message}`)
   }
-  const status = parsed.State?.Status ?? ''
-  const state: RunObservation['state'] =
-    status === 'created'
-      ? 'created'
-      : status === 'running' || status === 'paused' || status === 'restarting'
-        ? 'running'
-        : 'exited'
+  const state = observedState(parsed.State?.Status ?? '')
   const secrets: Record<string, string> = {}
   const wanted = new Set(lifecycle.secretNames)
   for (const entry of parsed.Config?.Env ?? []) {
@@ -307,6 +301,20 @@ export async function observeRun(lifecycle: RunLifecycleRecord): Promise<RunObse
     exitCode: state === 'exited' ? (parsed.State?.ExitCode ?? -1) : null,
     finishedAt: finishedAt !== null && !finishedAt.startsWith('0001-') ? finishedAt : null,
     secrets,
+  }
+}
+
+/** Map Docker's container status onto the three states recovery distinguishes. */
+function observedState(status: string): RunObservation['state'] {
+  switch (status) {
+    case 'created':
+      return 'created'
+    case 'running':
+    case 'paused':
+    case 'restarting':
+      return 'running'
+    default:
+      return 'exited'
   }
 }
 
@@ -329,14 +337,13 @@ export async function recordInterruptedRun(
     imageRef: lifecycle.imageRef,
     startedAt,
     finishedAt: now.toISOString(),
-    durationMs: null as unknown as number,
+    durationMs: Math.max(0, now.getTime() - Date.parse(startedAt)),
     exitCode: null,
     status: 'interrupted',
     result: null,
     resultError: reason,
     killReason: null,
   }
-  record.durationMs = Math.max(0, now.getTime() - Date.parse(startedAt))
   await mkdir(path.join(runsDir, lifecycle.runId), { recursive: true })
   await writeFile(path.join(runsDir, lifecycle.runId, 'result.json'), JSON.stringify(record, null, 2))
   await updateLifecycleRecord(runsDir, lifecycle, {
@@ -643,13 +650,4 @@ export async function sweepOrphanContainers(
   }
   if (doomed.length > 0) await docker(['rm', '-f', ...doomed.map((d) => d.id)])
   return doomed.map((d) => d.runId || d.id)
-}
-
-/** True when the run directory still exists (used by callers deciding what to protect). */
-export async function runDirExists(runsDir: string, runId: string): Promise<boolean> {
-  try {
-    return (await stat(path.join(runsDir, runId))).isDirectory()
-  } catch {
-    return false
-  }
 }
