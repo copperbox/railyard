@@ -132,8 +132,6 @@ export function makeRunId(agentName: string): string {
   return `${stamp}--${agentName}--${newRunId()}`
 }
 
-const DEFAULT_TIMEOUT_SECONDS = 900
-
 /** Everything a supervising or finalizing step needs about one run. */
 interface RunContext {
   lifecycle: RunLifecycleRecord
@@ -407,8 +405,7 @@ async function startContainer(ctx: RunContext): Promise<void> {
   const { runId, containerName } = ctx.lifecycle
   await dockerOk(['start', containerName], `run ${runId}`)
   const startedAt = new Date()
-  const timeoutSeconds =
-    ctx.lifecycle.timeoutSeconds === undefined ? DEFAULT_TIMEOUT_SECONDS : ctx.lifecycle.timeoutSeconds
+  const timeoutSeconds = ctx.lifecycle.timeoutSeconds
   const deadlineAt =
     timeoutSeconds === null ? null : new Date(startedAt.getTime() + timeoutSeconds * 1000)
   ctx.lifecycle = await updateLifecycleRecord(ctx.runsDir, ctx.lifecycle, {

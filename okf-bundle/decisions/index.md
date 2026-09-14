@@ -9,4 +9,5 @@
 * [M4 design decisions (user-zero dogfood)](m4-design-decisions.md)
 * [M5 design decisions (hardening for strangers)](m5-design-decisions.md)
 * [An orchestrator locks both directories it owns (runsDir, stateDir) at boot](owned-directory-locks.md)
+* [Orchestrator restarts recover running containers instead of killing them (detach / drain / cancel, lifecycle records, ledger, watchdog)](orchestrator-recovery.md)
 * [Redaction is literal value matching with a minimum length](redaction-literal-matching-min-length.md)

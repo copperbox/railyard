@@ -1,6 +1,6 @@
 {
   "name": "@copperbox/railyard-monitor-github",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "First-party GitHub issues monitor for railyard: polls issue events, emits github.issue.* signals with published JSON Schemas.",
   "license": "MIT",
   "publishConfig": {
@@ -34,7 +34,7 @@
     "test:github": "cross-env RAILYARD_GITHUB_TESTS=1 vitest run"
   },
   "peerDependencies": {
-    "@copperbox/railyard": "^1.0.0"
+    "@copperbox/railyard": "^2.0.0"
   },
   "devDependencies": {
     "@copperbox/railyard": "workspace:*",

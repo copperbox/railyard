@@ -66,10 +66,12 @@ export class IntervalMonitor implements Monitor {
   emitter schema and **fails loudly on a mismatch** — so a broken wiring can't reach
   production. `ctx.emit()` also validates each payload against its declared schema at
   emit time and throws on a violation.
-- **Dedup is your job.** The framework does not dedup — `signal.id` is unique per
-  emission, full stop. It cannot know what makes two of *your* events "the same." Use
-  `ctx.state` to remember what you've already emitted (the GitHub monitor keys off
-  GitHub's event id).
+- **Dedup is your job — and you can tell the framework what "the same" means.**
+  `signal.id` is unique per emission, full stop; the framework cannot know what makes two
+  of *your* events equivalent. Use `ctx.state` to remember what you've already emitted
+  (the GitHub monitor keys off GitHub's event id), *and* attach a work identity so a
+  re-emission after a crash cannot start a second run. See
+  [dedup and work identity](#dedup-and-work-identity).
 - **`ctx.state` is your persistence seam.** A per-monitor key/value store (JSON files on
   disk by default, pluggable backend) for cursors like "last seen event." It survives
   restarts. Keep keys scoped and small.
@@ -77,6 +79,30 @@ export class IntervalMonitor implements Monitor {
   does not ship a cron layer.
 - **Emit fully JSON-serializable payloads.** No dates-as-objects, no cycles — this is what
   lets a future transport carry your signals between processes unchanged.
+
+## Dedup and work identity
+
+Persisting your cursor *after* emitting is the right order (a crash in between re-emits,
+never loses), but since 2.0 the run your emission triggered may have **survived** the
+crash — the orchestrator recovers it. Attach a logical work identity to every emission
+so the re-emission is recognized:
+
+```ts
+ctx.emit({
+  type: 'github.issue.labeled',
+  payload,
+  work: { key: `${repo}#${event.id}` },   // what "the same work" means to you
+})
+```
+
+The framework scopes `(key, attempt)` per target agent and refuses a second delivery while
+the first is queued, active, or done within the ledger's retention window (default 7 days),
+journaling `run.skipped` / `duplicate` with what it collided with. A **deliberate retry**
+is the same key with `attempt: 2`; a **new revision** of the work is a new key. Without
+`work`, nothing is suppressed. This makes framework *delivery* at-most-once per identity;
+it does not make agent *execution* exactly-once — an agent that comments on an issue must
+still be idempotent on the work it receives. Full rules:
+[lifecycle & recovery](./lifecycle-and-recovery.md#deliveries-and-duplicate-suppression).
 
 ## Consuming your signals
 
@@ -87,6 +113,7 @@ The framework mirrors every journaled fact on an in-process emitter, typed per e
 orchestrator.on('signal.received', (e) => console.log(e.signalType, e.source.name))
 orchestrator.on('run.started',    (e) => console.log(e.agent, e.signalId))
 orchestrator.on('run.finished',   (e) => console.log(e.status, e.exitCode, e.durationMs))
+orchestrator.on('run.recovered',  (e) => console.log(e.runId, e.outcome)) // after a restart
 ```
 
 ## Testing a monitor without an orchestrator

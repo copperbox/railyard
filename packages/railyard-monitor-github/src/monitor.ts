@@ -51,7 +51,10 @@ const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
  * keeps a per-repo cursor (highest processed event id) and ETag in ctx.state,
  * and emits github.issue.* signals. Dedup is this monitor's job (SPEC §9):
  * each GitHub event id is emitted at most once — except across a crash between
- * emit and cursor persist, where delivery is deliberately at-least-once.
+ * emit and cursor persist, where delivery is deliberately at-least-once. Every
+ * emission carries the work identity `<owner/name>#<eventId>`, so a re-emission
+ * cannot start a second run for the same event once the orchestrator has
+ * accepted the first (SPEC §6.6): the run it triggered may have survived.
  */
 export class GitHubIssuesMonitor implements Monitor {
   readonly name: string
@@ -218,7 +221,7 @@ export class GitHubIssuesMonitor implements Monitor {
       const payload = this.mapEvent(ctx, repo, event)
       if (payload === null) continue
       // At-least-once: emit, then persist. A crash between the two re-emits on
-      // restart — recovery, not duplication (the triggered run died with us).
+      // restart; the work identity keeps that from becoming a second run.
       ctx.emit(payload)
       await ctx.state.set(cursorKey, event.id)
     }
@@ -233,7 +236,7 @@ export class GitHubIssuesMonitor implements Monitor {
     ctx: MonitorContext,
     repo: string,
     event: RawIssueEvent,
-  ): { type: GitHubIssueSignalType; payload: unknown } | null {
+  ): { type: GitHubIssueSignalType; payload: unknown; work: { key: string } } | null {
     const type = EVENT_KIND_TO_SIGNAL[event.event]
     if (type === undefined) return null
     const issue = event.issue
@@ -265,10 +268,15 @@ export class GitHubIssuesMonitor implements Monitor {
         ...base,
         label: { name: label.name, color: label.color ?? null },
       }
-      return { type, payload }
+      return { type, payload, work: workIdentityFor(repo, event.id) }
     }
-    return { type, payload: base }
+    return { type, payload: base, work: workIdentityFor(repo, event.id) }
   }
+}
+
+/** The logical work identity of one issue event: stable across re-emissions and restarts. */
+export function workIdentityFor(repo: string, eventId: number): { key: string } {
+  return { key: `${repo}#${eventId}` }
 }
 
 function repoRefFrom(repo: RawRepo): GitHubRepoRef {

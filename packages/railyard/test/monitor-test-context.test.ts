@@ -117,3 +117,15 @@ describe('createMonitorTestContext', () => {
     ])
   })
 })
+
+describe('createMonitorTestContext: work identity (SPEC §6.6)', () => {
+  it('captures the work identity a monitor attaches, and omits the key when absent', () => {
+    const { ctx, emitted } = createMonitorTestContext([{ type: 'demo.tick', payloadSchema: { type: 'object' } }])
+    ctx.emit({ type: 'demo.tick', payload: {}, work: { key: 'k', attempt: 2 } })
+    ctx.emit({ type: 'demo.tick', payload: {} })
+    expect(emitted).toEqual([
+      { type: 'demo.tick', payload: {}, work: { key: 'k', attempt: 2 } },
+      { type: 'demo.tick', payload: {} },
+    ])
+  })
+})

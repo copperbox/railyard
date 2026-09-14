@@ -26,7 +26,9 @@ Both shapes carry:
   assignees, url, apiUrl, createdAt, updatedAt }`.
 - **`actor`** — login of the user who performed the event.
 - **`eventId`** — GitHub's issue-event id; the monitor's **dedup key** (emitted at most
-  once).
+  once). Since monitor 1.1.0 the envelope also carries
+  `work: { key: "<owner/name>#<eventId>" }` (core ≥ 2.0), the framework-level identity
+  that stops a re-emission from starting a second run.
 - **`occurredAt`** — the event's `created_at`.
 
 Shape A adds **`label`** — `{ name, color }` (color is a hex string without `#`, or null).

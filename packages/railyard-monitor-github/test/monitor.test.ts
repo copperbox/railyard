@@ -147,6 +147,14 @@ describe('GitHubIssuesMonitor polling', () => {
       'github.issue.reopened',
     ])
     expect(await kv.get('cursor:o/r')).toBe(105)
+    // Every emission carries its work identity: the repo and GitHub's event id
+    // (SPEC §6.6), so a re-emission after a crash cannot start a second run.
+    expect(emitted.map((e) => e.work)).toEqual([
+      { key: 'o/r#100' },
+      { key: 'o/r#101' },
+      { key: 'o/r#102' },
+      { key: 'o/r#104' },
+    ])
   })
 
   it('maps the labeled payload faithfully, repo identity from preflight', async () => {
@@ -159,6 +167,7 @@ describe('GitHubIssuesMonitor polling', () => {
     expect(emitted).toEqual([
       {
         type: 'github.issue.labeled',
+        work: { key: 'o/r#100' },
         payload: {
           repo: {
             owner: 'o',

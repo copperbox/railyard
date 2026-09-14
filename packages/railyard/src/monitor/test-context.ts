@@ -14,7 +14,7 @@ export interface CapturedLogLine {
 /** What createMonitorTestContext returns: a real MonitorContext plus its captures. */
 export interface MonitorTestContext {
   ctx: MonitorContext
-  /** Validated drafts, in emission order. */
+  /** Validated drafts, in emission order (`work` present only when the monitor set it). */
   emitted: SignalDraft[]
   logs: CapturedLogLine[]
   /** The in-memory store behind ctx.state — seed cursors before, assert after. */
@@ -47,7 +47,11 @@ export function createMonitorTestContext(
     emit: (draft) => {
       const error = checkDraftAgainstDeclarations(source, draft, validators)
       if (error !== null) throw new Error(error)
-      emitted.push({ type: draft.type, payload: draft.payload })
+      emitted.push({
+        type: draft.type,
+        payload: draft.payload,
+        ...(draft.work !== undefined ? { work: draft.work } : {}),
+      })
     },
     state: kv,
     log: {

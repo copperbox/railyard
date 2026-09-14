@@ -27,6 +27,12 @@ const stubExecutor: AgentExecutor = {
   execute: async () => {
     throw new Error('unexpected execute() in this test')
   },
+  observe: async () => {
+    throw new Error('unexpected observe() in this test')
+  },
+  resume: async () => {
+    throw new Error('unexpected resume() in this test')
+  },
   sweep: async () => [],
 }
 

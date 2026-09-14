@@ -158,16 +158,23 @@ contractual — persistence is the agent's job via its outputs); teardown always
 
 ## 6. Lifecycle & safeguards
 
-One matched signal → one container → run → exit → removal. Strictly ephemeral in v1
+One matched signal → one container → run → exit → removal. Strictly ephemeral
 (warm pools / resident agents may arrive later behind the same `AgentExecutor` interface).
+A run belongs to its *runs directory*, not to the orchestrator process that launched it:
+the process may be replaced while the container runs (§6.5).
 
 Non-negotiable framework features (defaults on, tunable, never silently absent):
 
-1. **Per-agent concurrency cap** — default 1; excess matched signals queue in memory.
+1. **Per-agent concurrency cap** — default 1; excess matched signals queue, durably
+   (`runs/queue/`), and survive a stop or crash.
 2. **Hard timeout** — framework-enforced kill; default on; a user may explicitly configure
-   `timeout: null` to opt into an indefinite run.
-3. **Guaranteed teardown** — container and resources removed on success, failure, or
-   timeout; logs captured before removal.
+   `timeout: null` to opt into an indefinite run. The deadline is absolute, fixed at
+   container start, and enforced by a framework-owned watchdog process that outlives the
+   orchestrator, so it holds while no orchestrator is running.
+3. **Guaranteed teardown** — container and resources removed when the run is finalized, on
+   success, failure, timeout, or cancel; logs captured before removal. Detaching the
+   orchestrator is not teardown: the container keeps running until a later orchestrator
+   finalizes it.
 4. **Exclusive owned directories** — `runsDir` and `stateDir` each have exactly one
    running orchestrator, claimed at boot via a `.railyard.lock` in each and released at
    `stop()`. A second orchestrator over either fails to boot rather than proceeding:
@@ -177,6 +184,31 @@ Non-negotiable framework features (defaults on, tunable, never silently absent):
    silently loses progress — note it defaults to a sibling of `runsDir`, making accidental
    sharing easy). A lock whose owning pid is provably gone on the same host is taken over
    automatically; one from another host is reported for a human to clear.
+5. **Durable lifecycle and restart recovery** — every run's launch intent is persisted to
+   `runs/<runId>/lifecycle.json` (versioned) *before* its container is created, and
+   advanced through `created → started → exited → finalized → closed` with the events
+   checkpoint, deadline, image, inputs, and secret *names*. `stop()` has three modes:
+   `drain` (default: wait for active runs, keep the queue), `detach` (release supervision,
+   leave containers running, return promptly), `cancel` (kill active runs, drop the
+   queue, journaled). Repeated or concurrent stops share one completion. At boot, after
+   claiming the locks and before retention, queue admission, or monitors, the orchestrator
+   reconciles every unfinished record: reattaches to running containers (same run id,
+   original image/inputs/deadline, concurrency restored first), finalizes exited ones,
+   records missing ones `interrupted` (a never-started delivery is requeued by policy;
+   a started one is never retried automatically), and journals each once. Unknown backend
+   state or an unsupported record version fails boot without removing anything;
+   retention never touches an unfinished or unreadable record. Contract:
+   [docs/lifecycle-and-recovery.md](docs/lifecycle-and-recovery.md).
+6. **Delivery ledger and work identity** — `runs/ledger.json` remembers every routed
+   signal id (agent emissions get deterministic ids from `(runId, events-line index)`),
+   every accepted `(agent, signalId)` delivery, and every `(agent, work.key,
+   work.attempt)` logical work identity an emitter attaches (`work: { key, attempt? }` on
+   the draft, carried on the envelope). A known signal id is routed at most once; a work
+   identity that is queued, active, or done within the retention window is skipped and
+   journaled (`run.skipped` / `duplicate`, naming the collision and any payload
+   conflict). A retry is a new `attempt`; a revision is a new key. Transport stays
+   at-least-once and execution is not exactly-once: agents with external side effects
+   must stay idempotent on the work they receive.
 
 ## 7. Agent-emitted signals, provenance, and runaway prevention
 
@@ -233,15 +265,25 @@ interface MonitorContext {
 - The signal bus is in-memory, behind a **`SignalTransport` interface** so a Redis/NATS/HTTP
   transport (and with it, out-of-process monitors) can be added without touching monitor or
   agent code.
-- **Accepted v1 limitation:** an orchestrator crash takes monitors down with it and loses
-  in-flight/queued signals. Durability arrives with a persistent transport, not in v1.
+- **Restarts are routine** (§6.5): the process can be stopped in `detach` mode and a
+  new one (new application code, new railyard) started over the same `runsDir` on the
+  same Docker host; running containers, queued deliveries, and unreported completions are
+  recovered. Signals that were *inside a monitor* and not yet emitted are the monitor's
+  cursor's business (§9); an emitted signal is durable once accepted.
+- **Accepted limitation:** one Docker host, stable absolute paths. Migrating a run between
+  hosts is not a goal; durability of the bus itself across processes still arrives with a
+  persistent transport.
 - Boot sequence (fail-fast philosophy — by the time `start()` resolves, the system is
-  fully spawnable):
-  1. Load and validate agent manifests.
-  2. Check schema compatibility for every subscription (§3).
+  fully spawnable and every prior run is reconciled):
+  1. Claim the owned-directory locks (§6.4).
+  2. Load and validate agent manifests; check schema compatibility for every subscription (§3).
   3. Resolve every declared secret (§8).
-  4. Build/pull every agent image (§11).
-  5. Start monitors.
+  4. Recover persisted work (§6.5): reattach, finalize, or record every unfinished run;
+     sweep true orphans.
+  5. Retention sweep (§12), protecting unfinished runs.
+  6. Build/pull every agent image (§11); already-running agents keep their original image.
+  7. Restore queued deliveries against the restored concurrency accounting and admit.
+  8. Start monitors.
 
 ## 11. Images
 
@@ -263,17 +305,28 @@ runs/
                                     # sibling state/ dir carries one of its own.
   journal.jsonl                     # append-only index: every signal received, every run
                                     # started/finished. EXEMPT from retention pruning.
+  ledger.json                       # delivery ledger (§6.6): routed signal ids, deliveries,
+                                    # work identities. Exempt from retention.
+  queue/<agent>--<signalId>.json    # accepted, not-yet-launched deliveries (§6.5). Exempt.
   2026-07-19T.../github-reviewer--a1b2c3/
+    lifecycle.json                  # durable launch intent + phase machine (§6.5); the
+                                    # run is protected from retention until it is closed
     invocation.json                 # signal envelope (incl. provenance), matched agent,
                                     # resolved params, image hash
     agent.log                       # captured stdout/stderr (secrets redacted)
     events.jsonl                    # the mounted events file, preserved
     result.json                     # agent result + exit code, timing, kill reason if any
+    watchdog-kill.json              # present only if the deadline watchdog killed the run
 ```
 
 - The same facts are emitted as structured events on an in-process emitter
   (`orchestrator.on(...)`) so users can pipe them anywhere. Observability is data we keep,
   not a stack we run.
+- Restart states are first-class journal events (§6.5): `run.detached`, `run.recovered`
+  (`reattached` / `finalized` / `interrupted` / `requeued`), `run.finished` with status
+  `interrupted` or `killReason: "cancelled"`, and `run.skipped` reasons `duplicate`,
+  `cancelled`, `agent-removed`. `run.started` and `run.finished` are journaled exactly
+  once per run, however many processes supervised it.
 - **Retention:** `retention: { maxAgeDays?, maxRunsPerAgent? }` in orchestrator config
   (whichever prunes more wins), enforced by a sweep at boot and after each run — no
   background timers. **Default is unlimited, with a startup warning if unset** — a default
@@ -360,3 +413,6 @@ ports sharing the wire/disk contracts.
 9. First-party monitors/scaffolds use only public API.
 10. Defaults never destroy information (no silent retention pruning, no silent signal drops
     without a journal entry).
+11. A restart never orphans or duplicates work: launch intent is persisted before a
+    container exists, recovery reconciles before anything destructive runs, and what
+    cannot be determined is left alone and reported.
