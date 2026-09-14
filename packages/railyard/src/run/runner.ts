@@ -319,6 +319,50 @@ function observedState(status: string): RunObservation['state'] {
 }
 
 /**
+ * Finalize a run whose exit *was* observed and recorded but whose container is
+ * already gone — the crash came between `docker rm` and result.json. Pure
+ * bookkeeping from the record and the run directory: the recorded exit code,
+ * the agent's output/result.json, and the watchdog marker. No backend calls.
+ */
+export async function recordExitedRun(
+  runsDir: string,
+  lifecycle: RunLifecycleRecord,
+  redactor?: Redactor,
+): Promise<RunRecord> {
+  const runDir = path.join(runsDir, lifecycle.runId)
+  const outputDir = path.join(runDir, 'output')
+  const exitCode = lifecycle.exitCode ?? -1
+  if (redactor) {
+    await rewriteRedacted(path.join(runDir, 'events.jsonl'), redactor)
+    await rewriteRedacted(path.join(outputDir, 'result.json'), redactor)
+  }
+  const { result, resultError } = await readAgentResult(outputDir)
+  const startedAt = lifecycle.startedAt ?? lifecycle.createdAt ?? lifecycle.intentAt
+  const finishedAt = lifecycle.exitedAt ?? new Date().toISOString()
+  const record: RunRecord = {
+    runId: lifecycle.runId,
+    agent: lifecycle.agent,
+    signalId: lifecycle.signal.id,
+    imageRef: lifecycle.imageRef,
+    startedAt,
+    finishedAt,
+    durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+    exitCode,
+    status: exitCode === 0 ? 'succeeded' : 'failed',
+    result: redactor ? redactor.redactJson(result) : result,
+    resultError,
+    killReason: (await readWatchdogKill(runDir))?.reason ?? null,
+  }
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify(record, null, 2))
+  await updateLifecycleRecord(runsDir, lifecycle, {
+    phase: 'finalized',
+    finalizedAt: record.finishedAt,
+    outcome: record,
+  })
+  return record
+}
+
+/**
  * Record a run whose container is gone with no exit ever observed. Pure
  * bookkeeping: writes result.json (status `interrupted`) and closes out the
  * lifecycle record. No backend calls.
@@ -549,17 +593,7 @@ async function finalize(ctx: RunContext, exitCode: number, killReason: string | 
   await docker(['rm', '-f', lc.containerName])
 
   const finishedAt = new Date()
-  let result: unknown = null
-  let resultError: string | null = null
-  try {
-    result = JSON.parse(await readFile(path.join(ctx.outputDir, 'result.json'), 'utf8'))
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      resultError = 'agent wrote no result.json'
-    } else {
-      resultError = `result.json unreadable: ${(err as Error).message}`
-    }
-  }
+  const { result, resultError } = await readAgentResult(ctx.outputDir)
   if (ctx.redactor) {
     // The agent wrote these two directly; scrub them now that the run is over.
     // Arbitrary other output files are the agent's own business (documented).
@@ -588,6 +622,18 @@ async function finalize(ctx: RunContext, exitCode: number, killReason: string | 
     outcome: record,
   })
   return record
+}
+
+/** The agent's own $AGENT_OUTPUT_DIR/result.json, parsed; why not, if not. */
+async function readAgentResult(outputDir: string): Promise<{ result: unknown; resultError: string | null }> {
+  try {
+    return { result: JSON.parse(await readFile(path.join(outputDir, 'result.json'), 'utf8')), resultError: null }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { result: null, resultError: 'agent wrote no result.json' }
+    }
+    return { result: null, resultError: `result.json unreadable: ${(err as Error).message}` }
+  }
 }
 
 /** A launch/supervision step failed: tear down what exists and record the error. */

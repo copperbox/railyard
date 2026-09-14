@@ -98,10 +98,13 @@ class FakeBackend {
 class SimulatedExecutor implements AgentExecutor {
   calls: RunAgentParams[] = []
   resumed: ResumeRunParams[] = []
+  /** Test seam: hold image preparation (a slow docker build/pull) until released. */
+  readyGate: Promise<void> = Promise.resolve()
 
   constructor(readonly backend: FakeBackend) {}
 
   async ensureReady(agent: { name: string }): Promise<string> {
+    await this.readyGate
     return `fake/${agent.name}:latest`
   }
 
@@ -460,6 +463,43 @@ describe('detach and reattach (SPEC §6.5)', () => {
     expect(b.of('run.recovered')).toEqual([expect.objectContaining({ runId, outcome: 'reattached' })])
     h.backend.exit(runId, 0)
     await b.orchestrator.stop()
+  })
+})
+
+describe('boot-time admission (SPEC §6.5)', () => {
+  it('a child signal emitted by a reattached run while images are still being prepared is admitted exactly once', async () => {
+    const h = await harness({
+      first: { manifest: 'name: first\non:\n  - type: demo.tick\n' },
+      second: { manifest: 'name: second\non:\n  - type: first.done\n' },
+    })
+    const a = h.boot()
+    await a.orchestrator.start()
+    a.monitor.emit({ n: 1 })
+    const runId = await firstRunId(a)
+    await a.orchestrator.stop({ mode: 'detach' })
+
+    // The successor's image step blocks (a real docker build); the reattached
+    // run emits a child in that window, so it lands in the durable queue and in
+    // memory before restoreQueue() reads the queue directory back.
+    const executor = new SimulatedExecutor(h.backend)
+    let release!: () => void
+    executor.readyGate = new Promise<void>((r) => { release = r })
+    const b = h.boot({ executor })
+    const started = b.orchestrator.start()
+    await vi.waitFor(() => expect(b.of('run.recovered')).toHaveLength(1))
+    h.backend.emit(runId, { kind: 'signal', type: 'first.done', payload: { step: 0 } })
+    await vi.waitFor(() => expect(b.of('run.queued')).toHaveLength(1))
+    release()
+    await started
+    await vi.waitFor(() => expect(b.executor.calls.filter((c) => c.agent.name === 'second')).toHaveLength(1))
+    // Nothing else is waiting to launch the same delivery a second time.
+    h.backend.exit(b.executor.calls[0]!.lifecycle.runId, 0)
+    h.backend.exit(runId, 0)
+    await vi.waitFor(() => expect(b.of('run.finished')).toHaveLength(2))
+    await b.orchestrator.stop()
+    expect(b.of('run.started').filter((e) => e.agent === 'second')).toHaveLength(1)
+    expect(b.of('run.queued')).toHaveLength(1)
+    expect(await new DurableQueue(h.runsDir).load()).toHaveLength(0)
   })
 })
 
@@ -847,6 +887,28 @@ describe('crash windows at every launch and finalization transition (SPEC §6.5)
     expect((await readLifecycleRecord(h.runsDir, record.runId))!.phase).toBe('closed')
   })
 
+  it('exited and already removed (crash between docker rm and result.json): finalized from the record, not interrupted', async () => {
+    const h = await harness()
+    const record = await persisted(h, 'exited')
+    await mkdir(path.join(h.runsDir, record.runId, 'output'), { recursive: true })
+    await writeFile(path.join(h.runsDir, record.runId, 'output', 'result.json'), JSON.stringify({ ok: true }))
+    const o = h.boot()
+    await o.orchestrator.start()
+    expect(o.of('run.recovered')).toEqual([expect.objectContaining({ runId: record.runId, outcome: 'finalized' })])
+    expect(o.of('run.finished')).toEqual([
+      expect.objectContaining({ runId: record.runId, status: 'succeeded', exitCode: 0 }),
+    ])
+    expect(o.executor.calls).toHaveLength(0)
+    await o.orchestrator.stop()
+    const closed = (await readLifecycleRecord(h.runsDir, record.runId))!
+    expect(closed.phase).toBe('closed')
+    expect(closed.outcome).toMatchObject({ status: 'succeeded', exitCode: 0, result: { ok: true } })
+    expect(JSON.parse(await readFile(path.join(h.runsDir, record.runId, 'result.json'), 'utf8'))).toMatchObject({
+      status: 'succeeded',
+      result: { ok: true },
+    })
+  })
+
   it('finalized but not closed: the terminal entry is journaled exactly once, from the record', async () => {
     const h = await harness()
     const withoutLine = await persisted(h, 'finalized')
@@ -979,6 +1041,26 @@ describe('safety under uncertainty (SPEC §6.5)', () => {
     await b.orchestrator.start()
     h.backend.exit(runId, 0)
     await b.orchestrator.stop()
+  })
+
+  it('an unsupported queued-delivery version fails boot before any sweep too', async () => {
+    const h = await harness()
+    await mkdir(path.join(h.runsDir, 'queue'), { recursive: true })
+    await writeFile(
+      path.join(h.runsDir, 'queue', 'echo--sig_future.json'),
+      JSON.stringify({ queueVersion: 99, agent: 'echo', signal: {}, acceptedAt: iso() }),
+    )
+    // An orphan container and a stale run directory that the sweeps would otherwise remove.
+    h.backend.containers.set('railyard--orphan', {
+      name: 'railyard--orphan', runId: 'orphan', state: 'running', exitCode: null, killReason: null,
+      env: {}, lines: [], waiters: new Set(), deadlineAt: null, timeoutSeconds: null,
+    })
+    const stale = '2020-01-01T00-00-00.000Z--echo--aaaaaaaa'
+    await mkdir(path.join(h.runsDir, stale))
+    const o = h.boot({ retention: { maxAgeDays: 1 } })
+    await expect(o.orchestrator.start()).rejects.toThrow(/queued delivery version 99 is not supported/)
+    expect(h.backend.containers.has('railyard--orphan')).toBe(true)
+    expect(await readdir(h.runsDir)).toContain(stale)
   })
 
   it('aggressive retention never removes an active, detached, or unreadable run', async () => {

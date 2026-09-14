@@ -67,9 +67,15 @@ export class DurableQueue {
     const entries: QueuedDelivery[] = []
     for (const name of names) {
       if (!name.endsWith('.json')) continue
-      const parsed = JSON.parse(
-        await readFile(path.join(this.dir, name), 'utf8'),
-      ) as Partial<QueuedDelivery>
+      let parsed: Partial<QueuedDelivery>
+      try {
+        parsed = JSON.parse(await readFile(path.join(this.dir, name), 'utf8')) as Partial<QueuedDelivery>
+      } catch (err) {
+        throw new Error(
+          `queued delivery ${name} is unreadable: ${(err as Error).message}. Nothing has been removed; ` +
+            `inspect or remove the file deliberately and start again.`,
+        )
+      }
       if (parsed.queueVersion !== QUEUE_VERSION) {
         throw new UnsupportedRecordError('queued delivery', parsed.queueVersion, QUEUE_VERSION)
       }

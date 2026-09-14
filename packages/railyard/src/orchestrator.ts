@@ -29,11 +29,12 @@ import {
   type RunLifecycleRecord,
 } from './run/lifecycle.js'
 import { DirectoryLock, RUNS_DIR_LOCK, STATE_DIR_LOCK } from './run/lock.js'
-import { DurableQueue } from './run/queue.js'
+import { DurableQueue, type QueuedDelivery } from './run/queue.js'
 import { sweepRetention, type RetentionPolicy } from './run/retention.js'
 import { renderPromptTemplate } from './prompt/template.js'
 import {
   makeRunId,
+  recordExitedRun,
   recordInterruptedRun,
   type RunObservation,
   type RunOutcome,
@@ -171,6 +172,8 @@ export class Orchestrator {
   private routing: Promise<void> = Promise.resolve()
   /** (agent, signalId) → runId for every persisted run seen at boot, closed or not. */
   private readonly recoveredRuns = new Map<string, string>()
+  /** Durable pending deliveries read at reconcile time (before any sweep); restored after images are ready. */
+  private persistedQueue: QueuedDelivery[] = []
   private agents: LoadedAgent[] = []
   private phase: Phase = 'idle'
   private imagesReady = false
@@ -667,17 +670,37 @@ export class Orchestrator {
   private admit(agent: LoadedAgent, signal: SignalEnvelope): void {
     const state = this.runStateFor(agent.name)
     if (!this.canLaunch() || state.active >= agent.manifest.concurrency) {
-      state.queue.push(signal)
-      this.record({
-        event: 'run.queued',
-        agent: agent.name,
-        signalId: signal.id,
-        signalType: signal.type,
-        queueDepth: state.queue.length,
-      })
+      this.enqueue(agent.name, signal, state)
       return
     }
     this.launch(agent, signal, state)
+  }
+
+  /**
+   * Put a delivery on its agent's in-memory FIFO, once. The same accepted
+   * delivery can reach here twice at boot — routed from a reattached run's
+   * events file and read back from the queue directory — and must not launch
+   * twice.
+   */
+  private enqueue(agentName: string, signal: SignalEnvelope, state: AgentRunState): void {
+    if (this.isPending(agentName, signal.id, state)) return
+    state.queue.push(signal)
+    this.record({
+      event: 'run.queued',
+      agent: agentName,
+      signalId: signal.id,
+      signalType: signal.type,
+      queueDepth: state.queue.length,
+    })
+  }
+
+  /** Already queued in memory or being launched by this process. */
+  private isPending(agentName: string, signalId: string, state: AgentRunState): boolean {
+    if (state.queue.some((q) => q.id === signalId)) return true
+    for (const run of this.activeRuns.values()) {
+      if (run.agent === agentName && run.signal.id === signalId) return true
+    }
+    return false
   }
 
   private canLaunch(): boolean {
@@ -929,7 +952,11 @@ export class Orchestrator {
    * fails boot — nothing is removed on the strength of an unknown.
    */
   private async reconcile(): Promise<void> {
+    // Every persisted record is read — and its version checked — before
+    // anything is swept or removed: an unsupported ledger, queue entry, or
+    // lifecycle record fails boot with the directory exactly as it was.
     await this.ledger.load()
+    this.persistedQueue = await this.queue.load()
     const { records, unreadable } = await listLifecycleRecords(this.runsDir)
     for (const runId of unreadable) {
       this.protectedRuns.add(runId)
@@ -1008,6 +1035,26 @@ export class Orchestrator {
    */
   private async recoverMissingRun(record: RunLifecycleRecord): Promise<void> {
     const base = { runId: record.runId, agent: record.agent, signalId: record.signal.id }
+    if (record.phase === 'exited') {
+      // The exit was observed and recorded; the crash came between removing
+      // the container and writing result.json. Nothing is lost: finalize from
+      // the record and the run directory.
+      this.record({ event: 'run.recovered', ...base, outcome: 'finalized' })
+      const outcome = await recordExitedRun(this.runsDir, record, this.redactor)
+      this.record({
+        event: 'run.finished',
+        ...base,
+        status: outcome.status,
+        exitCode: outcome.exitCode,
+        durationMs: outcome.durationMs,
+        ...(outcome.killReason !== null ? { killReason: outcome.killReason } : {}),
+      })
+      await this.journal.flush()
+      this.ledger.setStatus(record.agent, record.signal.id, 'done', record.runId)
+      await this.queue.remove(record.agent, record.signal.id)
+      await this.closeLifecycle(record.runId)
+      return
+    }
     const neverStarted = record.phase === 'intent' || record.phase === 'created'
     const agentDefined = this.agents.some((a) => a.name === record.agent)
     if (neverStarted && this.recovery.requeueUnstarted && agentDefined) {
@@ -1017,17 +1064,18 @@ export class Orchestrator {
         'container never started before supervision was lost; delivery requeued',
       )
       await this.closeLifecycle(record.runId)
-      // Same delivery, new attempt at running it: back to the durable queue.
-      await this.queue.accept(record.agent, record.signal)
+      // Same delivery, new attempt at running it: back to the durable queue
+      // (and into this boot's restore set — the directory was read before reconcile).
+      this.persistedQueue.push(await this.queue.accept(record.agent, record.signal))
       this.ledger.setStatus(record.agent, record.signal.id, 'queued', null)
       this.recoveredRuns.delete(deliveryKey(record.agent, record.signal.id))
       return
     }
     this.record({ event: 'run.recovered', ...base, outcome: 'interrupted' })
-    const reason =
-      record.phase === 'started'
-        ? 'container missing on recovery; no exit was observed'
-        : 'container never started and its delivery was not requeued'
+    let reason: string
+    if (record.phase === 'started') reason = 'container missing on recovery; no exit was observed'
+    else if (!agentDefined) reason = 'container never started and its agent is no longer defined; delivery not requeued'
+    else reason = 'container never started and its delivery was not requeued (recovery.requeueUnstarted is off)'
     await this.recordInterrupted(record, reason)
     this.ledger.setStatus(record.agent, record.signal.id, 'done', record.runId)
     await this.queue.remove(record.agent, record.signal.id)
@@ -1112,7 +1160,8 @@ export class Orchestrator {
    * Deliveries for agents that no longer exist are dropped, journaled.
    */
   private async restoreQueue(): Promise<void> {
-    const pending = await this.queue.load()
+    const pending = this.persistedQueue
+    this.persistedQueue = []
     for (const entry of pending) {
       const agent = this.agents.find((a) => a.name === entry.agent)
       if (agent === undefined) {
@@ -1136,17 +1185,13 @@ export class Orchestrator {
         await this.queue.remove(agent.name, entry.signal.id)
         continue
       }
+      const state = this.runStateFor(agent.name)
+      // Accepted by this very process while boot was still under way (a child
+      // signal from a reattached run): it is already pending, not new work.
+      if (this.isPending(agent.name, entry.signal.id, state)) continue
       if (delivery === undefined) this.ledger.accept(agent.name, entry.signal)
       this.ledger.setStatus(agent.name, entry.signal.id, 'queued', null)
-      const state = this.runStateFor(agent.name)
-      state.queue.push(entry.signal)
-      this.record({
-        event: 'run.queued',
-        agent: agent.name,
-        signalId: entry.signal.id,
-        signalType: entry.signal.type,
-        queueDepth: state.queue.length,
-      })
+      this.enqueue(agent.name, entry.signal, state)
     }
     await this.ledger.flush()
     for (const agentName of this.runStates.keys()) this.admitNext(agentName)
