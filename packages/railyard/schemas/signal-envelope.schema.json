@@ -4,7 +4,15 @@
   "title": "Signal envelope",
   "description": "A signal as it travels on the bus: framework-set envelope plus emitter-set type and payload. SPEC §2.",
   "type": "object",
-  "required": ["contractVersion", "id", "timestamp", "source", "provenance", "type", "payload"],
+  "required": [
+    "contractVersion",
+    "id",
+    "timestamp",
+    "source",
+    "provenance",
+    "type",
+    "payload"
+  ],
   "additionalProperties": false,
   "properties": {
     "contractVersion": {
@@ -13,7 +21,7 @@
     },
     "id": {
       "type": "string",
-      "description": "Unique per emission. The framework does not dedup.",
+      "description": "Unique per emission. Agent emissions get a deterministic id derived from (runId, events-line index), so a replayed events line yields the same id and the delivery ledger routes it at most once.",
       "pattern": "^sig_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     },
     "timestamp": {
@@ -28,12 +36,22 @@
       "description": "Ordered causality chain: the (source, signal) pairs that led to this emission, oldest first. Empty for monitor-emitted signals. SPEC §7.",
       "items": {
         "type": "object",
-        "required": ["source", "signalId", "signalType"],
+        "required": [
+          "source",
+          "signalId",
+          "signalType"
+        ],
         "additionalProperties": false,
         "properties": {
-          "source": { "$ref": "#/$defs/source" },
-          "signalId": { "type": "string" },
-          "signalType": { "type": "string" }
+          "source": {
+            "$ref": "#/$defs/source"
+          },
+          "signalId": {
+            "type": "string"
+          },
+          "signalType": {
+            "type": "string"
+          }
         }
       }
     },
@@ -42,16 +60,45 @@
     },
     "payload": {
       "description": "Arbitrary JSON, validated against the emitter's declared JSON Schema."
+    },
+    "work": {
+      "type": "object",
+      "description": "Optional logical work identity for duplicate suppression, scoped per target agent by the framework (SPEC §6.6). The same (agent, key, attempt) runs at most once within the replay-retention window; attempt (default 1) expresses a deliberate retry; a new revision of the work is a new key.",
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   },
   "$defs": {
     "source": {
       "type": "object",
-      "required": ["kind", "name"],
+      "required": [
+        "kind",
+        "name"
+      ],
       "additionalProperties": false,
       "properties": {
-        "kind": { "enum": ["monitor", "agent"] },
-        "name": { "type": "string", "minLength": 1 }
+        "kind": {
+          "enum": [
+            "monitor",
+            "agent"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "signalType": {

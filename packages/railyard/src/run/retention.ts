@@ -1,5 +1,6 @@
 import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { readLifecycleRecord } from './lifecycle.js'
 
 /**
  * Retention policy (SPEC §12): whichever rule prunes more wins (the union of
@@ -16,7 +17,11 @@ export interface RetentionPolicy {
 export interface RetentionSweepOptions {
   runsDir: string
   policy: RetentionPolicy
-  /** Run ids currently executing — never pruned, whatever their age. */
+  /**
+   * Run ids currently executing — never pruned, whatever their age. Runs whose
+   * lifecycle record is not yet closed (or is unreadable) are protected on
+   * top of this, so recovery evidence survives any policy (SPEC §6.5).
+   */
   activeRunIds?: ReadonlySet<string>
   /** Clock override for tests. */
   now?: Date
@@ -82,8 +87,24 @@ export async function sweepRetention(options: RetentionSweepOptions): Promise<st
   const removed: string[] = []
   for (const runId of [...doomed].sort()) {
     if (activeRunIds?.has(runId)) continue
+    if (await isUnfinished(runsDir, runId)) continue
     await rm(path.join(runsDir, runId), { recursive: true, force: true })
     removed.push(runId)
   }
   return removed
+}
+
+/**
+ * A run with a lifecycle record that has not reached `closed` may still have
+ * a container, unreported events, or an unjournaled completion; an unreadable
+ * record is evidence a human should see. Both are kept. No record at all is
+ * the pre-recovery layout, prunable as before.
+ */
+async function isUnfinished(runsDir: string, runId: string): Promise<boolean> {
+  try {
+    const record = await readLifecycleRecord(runsDir, runId)
+    return record !== null && record.phase !== 'closed'
+  } catch {
+    return true
+  }
 }

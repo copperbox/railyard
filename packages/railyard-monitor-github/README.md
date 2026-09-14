@@ -106,8 +106,14 @@ processed event id) in `ctx.state`.
 - **First start baselines**: the cursor is set to the newest event id and nothing is
   emitted — history is never replayed. Delete the state file to re-baseline.
 - **Delivery is at-least-once across a crash**: the cursor is persisted *after* each
-  emission, so a crash in between re-emits that event on restart. That is recovery,
-  not duplication — the agent run the lost emission triggered died in the same crash.
+  emission, so a crash in between re-emits that event on restart. Since railyard 2.0 the
+  run that emission triggered may have *survived* the restart, so every emission carries
+  the work identity `work: { key: "<owner/name>#<eventId>" }`; the orchestrator's
+  delivery ledger suppresses the re-emission per target agent while the first delivery is
+  queued, active, or recently done (journaled `run.skipped` / `duplicate`). Requires
+  `@copperbox/railyard` ≥ 2.0 (peer dependency). Agents with external side effects should
+  still key their own idempotency on `signal.work.key` — see core's
+  [lifecycle & recovery](https://github.com/copperbox/railyard/blob/main/docs/lifecycle-and-recovery.md).
 - Rate limits (403/429): polling pauses monitor-wide until `retry-after` /
   `x-ratelimit-reset`, with a warning naming the resume time. Other errors log and
   retry on the next interval; the cursor is untouched, so nothing is lost.

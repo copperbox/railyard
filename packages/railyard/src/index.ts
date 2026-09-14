@@ -13,6 +13,7 @@ export type {
   SignalEventLine,
   SignalSource,
   SourceKind,
+  WorkIdentity,
 } from './contracts/types.js'
 export { newSignalId } from './contracts/id.js'
 export {
@@ -34,7 +35,7 @@ export {
 
 // Signal bus (SPEC §10)
 export { InMemoryTransport, type SignalHandler, type SignalTransport } from './bus/transport.js'
-export { stampSignal } from './bus/stamp.js'
+export { deterministicSignalId, stampSignal, type StampOptions } from './bus/stamp.js'
 
 // Agents as data (SPEC §3, §4)
 export {
@@ -67,14 +68,64 @@ export {
 // Execution (SPEC §5, §6)
 export { DockerExecutor, type AgentExecutor } from './run/executor.js'
 export {
+  BackendUnavailableError,
   CONTAINER_PATHS,
   makeRunId,
+  observeRun,
+  recordInterruptedRun,
+  resumeRun,
   runAgent,
   sweepOrphanContainers,
+  type ResumeRunParams,
   type RunAgentParams,
+  type RunControl,
+  type RunObservation,
+  type RunOutcome,
   type RunRecord,
+  type RunSupervisionHandlers,
 } from './run/runner.js'
-export { EventsTailer, type EventsTailerHandlers } from './run/events-tailer.js'
+export {
+  EventsTailer,
+  type EventsTailerHandlers,
+  type EventsTailerOptions,
+  type EventsTailerStopOptions,
+} from './run/events-tailer.js'
+
+// Durable lifecycle & recovery (SPEC §6.5, §6.6)
+export {
+  LIFECYCLE_FILE_NAME,
+  LIFECYCLE_VERSION,
+  UnsupportedRecordError,
+  containerNameFor,
+  createRunIntent,
+  listLifecycleRecords,
+  readLifecycleRecord,
+  updateLifecycleRecord,
+  writeLifecycleRecord,
+  type LifecycleListing,
+  type RunIntentParams,
+  type RunLifecycleRecord,
+  type RunPhase,
+} from './run/lifecycle.js'
+export {
+  LEDGER_FILE_NAME,
+  LEDGER_VERSION,
+  WorkLedger,
+  payloadHash,
+  type DeliveryEntry,
+  type DeliveryStatus,
+  type WorkEntry,
+} from './run/ledger.js'
+export { DurableQueue, QUEUE_DIR_NAME, QUEUE_VERSION, type QueuedDelivery } from './run/queue.js'
+export {
+  WATCHDOG_KILL_FILE,
+  readWatchdogKill,
+  spawnWatchdog,
+  stopWatchdog,
+  watchdogAlive,
+  type SpawnWatchdogParams,
+  type WatchdogKill,
+} from './run/watchdog.js'
 export {
   DirectoryLock,
   LOCK_FILE_NAME,
@@ -111,4 +162,10 @@ export {
 export { JsonFileKvStore, MemoryKvStore, type KeyValueStore } from './state/kv.js'
 
 // The orchestrator (SPEC §1, §10)
-export { Orchestrator, type OrchestratorConfig } from './orchestrator.js'
+export {
+  Orchestrator,
+  type OrchestratorConfig,
+  type RecoveryPolicy,
+  type ShutdownMode,
+  type StopOptions,
+} from './orchestrator.js'

@@ -22,6 +22,11 @@ await orchestrator.start()
 console.log('railyard demo running — watch examples/demo/runs/. Ctrl-C to stop.')
 
 process.on('SIGINT', () => {
-  console.log('\nstopping…')
+  console.log('\nstopping (drain: waiting for active runs)…')
   void orchestrator.stop().then(() => process.exit(0))
+})
+// A deploy sends SIGTERM: detach and leave containers running for the next start.
+process.on('SIGTERM', () => {
+  console.log('\ndetaching (containers keep running)…')
+  void orchestrator.stop({ mode: 'detach' }).then(() => process.exit(0))
 })

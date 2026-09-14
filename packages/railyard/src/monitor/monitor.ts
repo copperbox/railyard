@@ -1,4 +1,4 @@
-import type { SignalDeclaration } from '../contracts/types.js'
+import type { SignalDeclaration, WorkIdentity } from '../contracts/types.js'
 import type { KeyValueStore } from '../state/kv.js'
 
 /** SPEC §9, verbatim. Monitors are code; no scheduling sugar, dedup is theirs. */
@@ -11,8 +11,12 @@ export interface Monitor {
 }
 
 export interface MonitorContext {
-  /** Throws if the type is undeclared or the payload fails the declared schema. */
-  emit(signal: { type: string; payload: unknown }): void
+  /**
+   * Throws if the type is undeclared or the payload fails the declared schema.
+   * `work` is the optional logical work identity (SPEC §6.6): attach it so a
+   * re-emission after a crash cannot start a second run for the same work.
+   */
+  emit(signal: { type: string; payload: unknown; work?: WorkIdentity }): void
   state: KeyValueStore
   log: Logger
 }

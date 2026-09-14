@@ -39,8 +39,31 @@ await orchestrator.start()           // fail-fast boot: validates, checks, resol
 ```
 
 `start()` loads and validates every agent manifest, checks each subscription's schema
-against its emitter, resolves every declared secret, and builds/pulls every image **before
-it resolves** — misconfiguration surfaces at boot, not at 2 a.m.
+against its emitter, resolves every declared secret, recovers any run a previous process
+left behind, and builds/pulls every image **before it resolves** — misconfiguration
+surfaces at boot, not at 2 a.m.
+
+## Restarts without interrupting runs
+
+```ts
+process.on('SIGTERM', () => void orchestrator.stop({ mode: 'detach' }).then(() => process.exit(0)))
+```
+
+`stop({ mode: 'detach' })` returns promptly and leaves agent containers running; the next
+`start()` over the same `runsDir` reattaches to them (same run ids), finalizes any that
+exited meanwhile, restores queued deliveries, and journals each recovery once. `stop()`
+(`drain`) waits for active runs and keeps the queue; `stop({ mode: 'cancel' })` kills and
+drops. Deadlines stay enforced while no orchestrator runs, and an optional
+`work: { key, attempt }` on emissions stops a re-emitted signal from starting a second run.
+Contract and deploy recipe:
+[lifecycle & recovery](https://github.com/copperbox/railyard/blob/main/docs/lifecycle-and-recovery.md).
+
+**Upgrading from 1.x:** drain the 1.x process first (its `stop()`), then start 2.x. The
+only behavioral change to a plain `stop()` is that queued deliveries are kept for the next
+start instead of being dropped. `AgentExecutor` implementations must add `observe` /
+`resume` and return a `RunOutcome` from `execute`; `runAgent` now takes a persisted
+lifecycle record. Run directories gain `lifecycle.json`; the runs directory gains
+`ledger.json` and `queue/`.
 
 ## What's in the box
 
@@ -50,7 +73,10 @@ it resolves** — misconfiguration surfaces at boot, not at 2 a.m.
   template engines.
 - The Docker runner honoring the full container contract (input mount, events-file
   tailing, result collection, guaranteed teardown).
-- Safeguards: concurrency caps, timeouts, provenance depth limit, self-trigger guard.
+- Safeguards: concurrency caps, timeouts (watchdog-enforced across restarts), provenance
+  depth limit, self-trigger guard, duplicate suppression by work identity.
+- Durable lifecycle records with boot-time recovery: detach for a deploy, reattach on the
+  next start.
 - `SecretsProvider` (env/`.env` default) with a redaction guarantee; the file-based run
   journal + retention sweep.
 
@@ -63,6 +89,7 @@ Extension points are **seams, not features**: `SignalTransport`, `SecretsProvide
 - [Authoring monitors](https://github.com/copperbox/railyard/blob/main/docs/authoring-monitors.md)
   · [Authoring agents](https://github.com/copperbox/railyard/blob/main/docs/authoring-agents.md)
 - [Container contract](https://github.com/copperbox/railyard/blob/main/docs/container-contract.md)
+  · [Lifecycle & recovery](https://github.com/copperbox/railyard/blob/main/docs/lifecycle-and-recovery.md)
   · [Credential scoping](https://github.com/copperbox/railyard/blob/main/docs/credential-scoping.md)
 - [Signal Contract v1](https://github.com/copperbox/railyard/blob/main/docs/contracts/README.md)
   — the versioned, language-neutral wire/disk contracts.

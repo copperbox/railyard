@@ -24,8 +24,12 @@ table; the payload/dedup contract has
   processed event id per repo, in `ctx.state` (`cursor:<owner>/<repo>`); ETags also
   persisted (`etag:<owner>/<repo>`) so quiet polls are 304s that cost no rate limit.
 - **At-least-once across a crash**: emit first, then persist cursor. A crash in the
-  window re-emits on restart — recovery, not duplication, since the triggered agent
-  run died in the same crash.
+  window re-emits on restart. *Originally* "recovery, not duplication, since the
+  triggered agent run died in the same crash" — no longer true since railyard 2.0
+  recovers surviving runs ([decision](/decisions/orchestrator-recovery.md)). The monitor
+  therefore attaches `work: { key: "<owner/name>#<eventId>" }` to every emission; the
+  orchestrator's ledger suppresses the re-emission per target agent while the first
+  delivery is queued/active/done. Cursor semantics are unchanged.
 - **First run baselines** (cursor := newest event id, nothing emitted) — history is
   never replayed.
 

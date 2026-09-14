@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-09-14
+* Record the orchestrator recovery design (issue #7): detach/drain/cancel, lifecycle records, delivery ledger + work identity, deadline watchdog, executor observe/resume; railyard 2.0.0
+* M3 decisions: the emit-then-persist "recovery, not duplication" assumption no longer holds once runs survive restarts — the GitHub monitor now attaches a work identity per event id
+
 ## 2026-07-27
 * Point the process-boundary consequence at both owned-directory locks
 * Extend the boot lock to stateDir; generalize RunsDirLock to DirectoryLock

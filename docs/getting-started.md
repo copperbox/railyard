@@ -58,6 +58,8 @@ orchestrator.on('run.finished', (e) => console.log(`run ${e.runId} finished: ${e
 
 await orchestrator.start()
 process.on('SIGINT', () => void orchestrator.stop().then(() => process.exit(0)))
+// Deploys: detach instead — containers keep running and the next start picks them up.
+process.on('SIGTERM', () => void orchestrator.stop({ mode: 'detach' }).then(() => process.exit(0)))
 ```
 
 Run it and watch `examples/demo/runs/` fill with run directories. This exercises the

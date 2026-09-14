@@ -4,12 +4,18 @@ import path from 'node:path'
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { MonitorContext } from '../src/monitor/monitor.js'
 import type { AgentExecutor } from '../src/run/executor.js'
-import type { RunAgentParams, RunRecord } from '../src/run/runner.js'
+import type { RunAgentParams, RunObservation, RunOutcome, RunRecord } from '../src/run/runner.js'
 import type { JournaledEntry } from '../src/journal/journal.js'
 import { Orchestrator } from '../src/orchestrator.js'
+import { updateLifecycleRecord } from '../src/run/lifecycle.js'
 
 const TICK_SCHEMA = { type: 'object', required: ['n'], properties: { n: { type: 'number' } } }
 
+/**
+ * Executor without a backend: runs "finish" as soon as behavior() resolves.
+ * Advances the lifecycle record the way the docker runner would, so the
+ * orchestrator's bookkeeping is exercised for real.
+ */
 class FakeExecutor implements AgentExecutor {
   calls: RunAgentParams[] = []
   behavior: (params: RunAgentParams) => Partial<RunRecord> | Promise<Partial<RunRecord>> = () => ({})
@@ -18,15 +24,19 @@ class FakeExecutor implements AgentExecutor {
     return `fake/${agent.name}:latest`
   }
 
-  async execute(params: RunAgentParams): Promise<RunRecord> {
+  async execute(params: RunAgentParams): Promise<RunOutcome> {
     this.calls.push(params)
+    const { lifecycle, runsDir } = params
+    const startedAt = new Date().toISOString()
+    let lc = await updateLifecycleRecord(runsDir, lifecycle, { phase: 'started', startedAt })
+    const extra = await this.behavior(params)
     const now = new Date().toISOString()
-    return {
-      runId: params.runId ?? 'run',
+    const record: RunRecord = {
+      runId: lifecycle.runId,
       agent: params.agent.name,
-      signalId: params.signal.id,
-      imageRef: params.imageRef,
-      startedAt: now,
+      signalId: lifecycle.signal.id,
+      imageRef: lifecycle.imageRef,
+      startedAt,
       finishedAt: now,
       durationMs: 1,
       exitCode: 0,
@@ -34,8 +44,18 @@ class FakeExecutor implements AgentExecutor {
       result: null,
       resultError: null,
       killReason: null,
-      ...(await this.behavior(params)),
+      ...extra,
     }
+    lc = await updateLifecycleRecord(runsDir, lc, { phase: 'finalized', finalizedAt: now, outcome: record })
+    return { kind: 'finished', record }
+  }
+
+  async observe(): Promise<RunObservation> {
+    return { state: 'missing', exitCode: null, finishedAt: null, secrets: {} }
+  }
+
+  async resume(): Promise<RunOutcome> {
+    throw new Error('FakeExecutor cannot resume')
   }
 
   async sweep(): Promise<string[]> {
@@ -162,7 +182,7 @@ describe('routing', () => {
     await orchestrator.start()
     monitor.emit({ n: 1 })
     await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
-    const signal = executor.calls[0]!.signal
+    const signal = executor.calls[0]!.lifecycle.signal
     expect(signal.type).toBe('demo.tick')
     expect(signal.source).toEqual({ kind: 'monitor', name: 'ticker' })
     expect(signal.provenance).toEqual([])
@@ -218,7 +238,7 @@ describe('routing', () => {
     monitor.emit({ n: 1 })
     monitor.emit({ n: 2 })
     await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
-    expect(executor.calls[0]!.signal.payload).toEqual({ n: 2 })
+    expect(executor.calls[0]!.lifecycle.signal.payload).toEqual({ n: 2 })
     await orchestrator.stop()
   })
 
@@ -319,7 +339,7 @@ describe('agent-emitted signals (SPEC §7 chaining, M0 shape)', () => {
     })
     executor.behavior = (params) => {
       if (params.agent.name === 'first') {
-        params.onEvent({ kind: 'signal', type: 'first.done', payload: { ok: true } })
+        void params.onEvent({ kind: 'signal', type: 'first.done', payload: { ok: true } }, 0)
       }
       return {}
     }
@@ -330,12 +350,12 @@ describe('agent-emitted signals (SPEC §7 chaining, M0 shape)', () => {
     await vi.waitFor(() =>
       expect(executor.calls.map((c) => c.agent.name)).toEqual(['first', 'second']),
     )
-    const chained = executor.calls[1]!.signal
+    const chained = executor.calls[1]!.lifecycle.signal
     expect(chained.source).toEqual({ kind: 'agent', name: 'first' })
     expect(chained.provenance).toEqual([
       {
         source: { kind: 'monitor', name: 'ticker' },
-        signalId: executor.calls[0]!.signal.id,
+        signalId: executor.calls[0]!.lifecycle.signal.id,
         signalType: 'demo.tick',
       },
     ])
@@ -357,7 +377,7 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
       { maxChainDepth: 3 },
     )
     executor.behavior = (params) => {
-      params.onEvent({ kind: 'signal', type: 'loop.go', payload: {} })
+      void params.onEvent({ kind: 'signal', type: 'loop.go', payload: {} }, 0)
       return {}
     }
     const monitor = {
@@ -389,7 +409,7 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
       },
     })
     executor.behavior = (params) => {
-      params.onEvent({ kind: 'signal', type: 'loop.go', payload: {} })
+      void params.onEvent({ kind: 'signal', type: 'loop.go', payload: {} }, 0)
       return {}
     }
     const monitor = {
@@ -420,11 +440,10 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
       echo: { manifest: 'name: echo\non:\n  - type: demo.tick\n  - type: echo.done\n' },
     })
     executor.behavior = () => {
-      executor.calls[executor.calls.length - 1]!.onEvent({
-        kind: 'signal',
-        type: 'echo.done',
-        payload: {},
-      })
+      void executor.calls[executor.calls.length - 1]!.onEvent(
+        { kind: 'signal', type: 'echo.done', payload: {} },
+        0,
+      )
       return {}
     }
     const monitor = tickerMonitor()
@@ -450,7 +469,7 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
     })
     executor.behavior = (params) => {
       if (params.agent.name === 'emitter') {
-        params.onEvent({ kind: 'signal', type: 'emitter.done', payload: {} })
+        void params.onEvent({ kind: 'signal', type: 'emitter.done', payload: {} }, 0)
       }
       return {}
     }
@@ -479,7 +498,7 @@ describe('safeguards: depth limit + self-trigger guard (SPEC §7)', () => {
     await orchestrator.start()
     monitor.emit({ n: 1 })
     await vi.waitFor(() => expect(executor.calls).toHaveLength(3))
-    const byAgent = new Map(executor.calls.map((c) => [c.agent.name, c.timeoutSeconds]))
+    const byAgent = new Map(executor.calls.map((c) => [c.agent.name, c.lifecycle.timeoutSeconds]))
     expect(byAgent.get('default-timeout')).toBe(900)
     expect(byAgent.get('short-timeout')).toBe(30)
     expect(byAgent.get('forever')).toBeNull()
@@ -529,7 +548,7 @@ describe('safeguards: per-agent concurrency cap + queue (SPEC §6)', () => {
     })
     gated.release()
     await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
-    expect(executor.calls.map((c) => c.signal.payload)).toEqual([{ n: 1 }, { n: 2 }])
+    expect(executor.calls.map((c) => c.lifecycle.signal.payload)).toEqual([{ n: 1 }, { n: 2 }])
     gated.release()
     await orchestrator.stop()
   })
@@ -563,13 +582,13 @@ describe('safeguards: per-agent concurrency cap + queue (SPEC §6)', () => {
     await vi.waitFor(() => expect(executor.calls).toHaveLength(2))
     gated.release()
     await vi.waitFor(() => expect(executor.calls).toHaveLength(3))
-    expect(executor.calls.map((c) => c.signal.payload)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }])
+    expect(executor.calls.map((c) => c.lifecycle.signal.payload)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }])
     gated.release()
     await orchestrator.stop()
   })
 
-  it('stop() drops queued entries with a journal line each, but drains the in-flight run', async () => {
-    const { orchestrator, executor, entries } = await setup({ echo: ECHO })
+  it('stop() (drain) keeps queued entries durable for the next start, but drains the in-flight run', async () => {
+    const { root, orchestrator, executor, entries } = await setup({ echo: ECHO })
     const gated = gate(executor)
     const monitor = tickerMonitor()
     orchestrator.register(monitor)
@@ -578,14 +597,15 @@ describe('safeguards: per-agent concurrency cap + queue (SPEC §6)', () => {
     monitor.emit({ n: 2 })
     monitor.emit({ n: 3 })
     await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
+    await vi.waitFor(() => expect(entries.filter((e) => e.event === 'run.queued')).toHaveLength(2))
     const stopping = orchestrator.stop()
     setTimeout(() => gated.release(), 20)
     await stopping
     expect(executor.calls).toHaveLength(1)
-    const skipped = entries.filter((e) => e.event === 'run.skipped')
-    expect(skipped).toHaveLength(2)
-    expect(skipped.every((e) => (e as { reason: string }).reason === 'shutdown')).toBe(true)
+    expect(entries.filter((e) => e.event === 'run.skipped')).toHaveLength(0)
     expect(entries.filter((e) => e.event === 'run.finished')).toHaveLength(1)
+    // The two queued deliveries are on disk, waiting for the next orchestrator.
+    expect((await readdir(path.join(root, 'runs', 'queue'))).filter((f) => f.endsWith('.json'))).toHaveLength(2)
   })
 
   it('a failed run still releases its slot for the queued signal', async () => {
@@ -687,7 +707,7 @@ describe('safeguards: redaction (SPEC §8)', () => {
     monitor.emit({ n: 1, note: 'leaking super-sekret-value here' })
     await vi.waitFor(() => expect(executor.calls).toHaveLength(1))
     // The signal on the bus is scrubbed…
-    expect(executor.calls[0]!.signal.payload).toEqual({
+    expect(executor.calls[0]!.lifecycle.signal.payload).toEqual({
       n: 1,
       note: 'leaking [REDACTED:TOKEN] here',
     })
@@ -752,20 +772,22 @@ describe('safeguards: retention (SPEC §12)', () => {
     const bootSwept = entries.find((e) => e.event === 'retention.swept')
     expect(bootSwept).toMatchObject({ removed: [stale[0]] })
 
-    // A finished run triggers another sweep; the two remaining dirs are within
-    // the cap, so it must prune nothing further.
+    // A finished run leaves its own directory behind, so the after-run sweep
+    // now sees three dirs against a cap of two and prunes exactly the oldest
+    // survivor — never more.
     monitor.emit({ n: 1 })
     await vi.waitFor(() =>
       expect(entries.filter((e) => e.event === 'run.finished')).toHaveLength(1),
     )
     await orchestrator.stop()
-    // No new prune expected (2 dirs ≤ cap 2), but the boot prune must be the
-    // only retention.swept — proving sweeps don't over-delete.
-    expect(entries.filter((e) => e.event === 'retention.swept')).toHaveLength(1)
+    const sweeps = entries.filter((e) => e.event === 'retention.swept')
+    expect(sweeps).toHaveLength(2)
+    expect(sweeps[1]).toMatchObject({ removed: [stale[1]] })
     const left = await readdir(runsDir)
-    expect(left).toContain(stale[1]!)
+    expect(left).not.toContain(stale[1]!)
     expect(left).toContain(stale[2]!)
     expect(left).toContain('journal.jsonl')
+    expect(left.some((d) => d.includes('--echo--') && !stale.includes(d))).toBe(true)
   })
 
   it('after-run sweep prunes dirs that fell out of policy during the run', async () => {
@@ -783,8 +805,9 @@ describe('safeguards: retention (SPEC §12)', () => {
     executor.behavior = () => ({})
     monitor.emit({ n: 1 })
     await vi.waitFor(() => expect(entries.some((e) => e.event === 'retention.swept')).toBe(true))
+    // The live run's own (newest) directory is the one kept; both stale dirs go.
     const swept = entries.find((e) => e.event === 'retention.swept')!
-    expect((swept as { removed: string[] }).removed).toEqual([stale[0]])
+    expect((swept as { removed: string[] }).removed).toEqual(stale)
     await orchestrator.stop()
   })
 

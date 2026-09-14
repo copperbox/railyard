@@ -24,13 +24,26 @@ export function docker(
      * value-less `-e NAME` flags without ever appearing on an argv (SPEC §8).
      */
     env?: Record<string, string>
+    /**
+     * Abort = terminate the CLI process (not the container). Used to detach
+     * from a long `wait`/`logs --follow` without touching the run itself.
+     */
+    signal?: AbortSignal
   } = {},
 ): Promise<DockerResult> {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      resolve({ code: -1, stdout: '', stderr: 'aborted' })
+      return
+    }
     const child = spawn('docker', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: options.env ? { ...process.env, ...options.env } : undefined,
     })
+    const onAbort = (): void => {
+      child.kill('SIGTERM')
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk: Buffer) => {
@@ -46,7 +59,10 @@ export function docker(
     child.on('error', (err) =>
       reject(new Error(`failed to run docker (is it installed and on PATH?): ${err.message}`)),
     )
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
+    child.on('close', (code) => {
+      options.signal?.removeEventListener('abort', onAbort)
+      resolve({ code: code ?? -1, stdout, stderr })
+    })
   })
 }
 

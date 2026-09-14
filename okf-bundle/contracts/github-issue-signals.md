@@ -25,6 +25,9 @@ preflight's `GET /repos/{o}/{r}` response, so `private` and urls are true and
 GHE-correct), `issue` (poll-time snapshot: number, title, body, state, author, label
 *names*, assignee logins, url, apiUrl, createdAt, updatedAt), `actor`, `eventId`
 (GitHub's issue-event id — the dedup key), `occurredAt` (the event's created_at).
+Since monitor 1.1.0 every emission also carries the envelope-level work identity
+`work: { key: "<owner/name>#<eventId>" }` (core 2.0, SPEC §6.6), so a re-emission after
+a crash cannot start a second run for the same event.
 
 - Users are **login strings**, not objects. `labels` are **name strings**
   (filter-friendly: `$.label.name == "needs-review"` and `$.issue.labels[*]` work in

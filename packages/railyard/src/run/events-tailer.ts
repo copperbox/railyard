@@ -3,10 +3,40 @@ import type { EventsLine } from '../contracts/types.js'
 import { formatAjvErrors, validateEventsLine } from '../contracts/validate.js'
 
 export interface EventsTailerHandlers {
-  /** A complete, schema-valid JSONL line. Signal lines must dispatch mid-run (SPEC §5). */
-  onLine: (line: EventsLine) => void
+  /**
+   * A complete, schema-valid JSONL line and its index among the file's
+   * non-empty lines (the identity of any signal it carries). Signal lines
+   * must dispatch mid-run (SPEC §5). A returned promise is awaited before the
+   * line counts as consumed, so the checkpoint never runs ahead of durable
+   * acceptance.
+   */
+  onLine: (line: EventsLine, index: number) => void | Promise<void>
   /** A line that isn't valid JSON or doesn't match the events-line schema. Never fatal. */
   onMalformed: (raw: string, reason: string) => void
+  /**
+   * Called after each drained batch with the byte offset below which every
+   * line has been consumed, and the count of non-empty lines consumed.
+   * Persisting these is what lets a restarted supervisor resume without
+   * replaying handled events.
+   */
+  onCheckpoint?: (offset: number, consumed: number) => void | Promise<void>
+}
+
+export interface EventsTailerOptions {
+  pollMs?: number
+  /** Resume point: byte offset of the first unconsumed line (see onCheckpoint). */
+  startOffset?: number
+  /** Resume point: index of the first unconsumed non-empty line. */
+  startIndex?: number
+}
+
+export interface EventsTailerStopOptions {
+  /**
+   * `true` (default): the writer is gone — a trailing line without a newline
+   * is complete and is delivered. `false` (detach): the writer may still be
+   * mid-write, so the unterminated tail is left for the next supervisor.
+   */
+  final?: boolean
 }
 
 /**
@@ -17,16 +47,28 @@ export interface EventsTailerHandlers {
  */
 export class EventsTailer {
   private handle: FileHandle | null = null
-  private position = 0
+  private position: number
   private remainder = ''
+  private consumed: number
   private timer: NodeJS.Timeout | null = null
   private draining: Promise<void> = Promise.resolve()
+  private readonly pollMs: number
 
   constructor(
     private readonly filePath: string,
     private readonly handlers: EventsTailerHandlers,
-    private readonly pollMs = 100,
-  ) {}
+    options: EventsTailerOptions | number = {},
+  ) {
+    const opts = typeof options === 'number' ? { pollMs: options } : options
+    this.pollMs = opts.pollMs ?? 100
+    this.position = opts.startOffset ?? 0
+    this.consumed = opts.startIndex ?? 0
+  }
+
+  /** Byte offset below which every line has been consumed (excludes a buffered partial line). */
+  get checkpoint(): { offset: number; consumed: number } {
+    return { offset: this.position - Buffer.byteLength(this.remainder, 'utf8'), consumed: this.consumed }
+  }
 
   async start(): Promise<void> {
     this.handle = await open(this.filePath, 'r')
@@ -37,13 +79,18 @@ export class EventsTailer {
   }
 
   /** Final drain (including a trailing line without a newline), then release the file. */
-  async stop(): Promise<void> {
+  async stop(options: EventsTailerStopOptions = {}): Promise<void> {
+    const final = options.final ?? true
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     await this.draining
     await this.drain()
-    if (this.remainder.trim() !== '') this.emit(this.remainder)
-    this.remainder = ''
+    if (final && this.remainder.trim() !== '') {
+      await this.emit(this.remainder)
+      // position already counts the remainder's bytes; it is consumed now.
+      this.remainder = ''
+      await this.handlers.onCheckpoint?.(this.position, this.consumed)
+    }
     await this.handle?.close()
     this.handle = null
   }
@@ -51,6 +98,7 @@ export class EventsTailer {
   private async drain(): Promise<void> {
     if (!this.handle) return
     const { size } = await this.handle.stat()
+    let delivered = false
     while (this.position < size) {
       const length = Math.min(size - this.position, 64 * 1024)
       const buffer = Buffer.alloc(length)
@@ -61,12 +109,21 @@ export class EventsTailer {
       const lines = this.remainder.split('\n')
       this.remainder = lines.pop() ?? ''
       for (const line of lines) {
-        if (line.trim() !== '') this.emit(line)
+        if (line.trim() !== '') {
+          await this.emit(line)
+          delivered = true
+        }
       }
+    }
+    if (delivered) {
+      const { offset, consumed } = this.checkpoint
+      await this.handlers.onCheckpoint?.(offset, consumed)
     }
   }
 
-  private emit(raw: string): void {
+  private async emit(raw: string): Promise<void> {
+    const index = this.consumed
+    this.consumed += 1
     let parsed: unknown
     try {
       parsed = JSON.parse(raw)
@@ -78,6 +135,6 @@ export class EventsTailer {
       this.handlers.onMalformed(raw, formatAjvErrors(validateEventsLine.errors))
       return
     }
-    this.handlers.onLine(parsed)
+    await this.handlers.onLine(parsed, index)
   }
 }

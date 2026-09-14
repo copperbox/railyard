@@ -26,7 +26,11 @@ by construction. The reserved env var names above may not be used as secret name
 
 **Guarantees to the agent:** a **fresh container every invocation** — statelessness is
 contractual, so persistence is the agent's job via its outputs — and **teardown always
-happens** (on success, failure, or timeout), with logs captured before removal.
+happens** when the run is finalized (on success, failure, timeout, or cancel), with logs
+captured before removal. An orchestrator restart is invisible from inside the container:
+supervision may be handed from one orchestrator process to the next while the container
+runs (see [lifecycle & recovery](./lifecycle-and-recovery.md)); the mounts, env vars,
+deadline, and events file are exactly as they were.
 
 ## Outputs (what the container must produce)
 
@@ -51,8 +55,66 @@ run**, so agent-emitted signals dispatch while the agent is still running. It is
 - A **`signal`** line re-enters the same bus and can trigger other agents (agents
   triggering agents is a first-class goal). The framework stamps the envelope — including
   `contractVersion` and the extended [provenance](./contracts/signal-envelope.md) chain —
-  so the agent writes only `type` + `payload`. `type` matches
-  `^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`.
+  so the agent writes only `type` + `payload` (plus an optional
+  `"work": { "key": "…", "attempt": 1 }` logical work identity for
+  [duplicate suppression](./lifecycle-and-recovery.md#deliveries-and-duplicate-suppression)).
+  `type` matches `^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*# Container contract reference
+
+The complete interface between the orchestrator and whatever runs inside an agent
+container (SPEC §5). It is **language-neutral** — the container can be any image that reads
+some files and writes some files; railyard never assumes JavaScript inside. This is also
+the reference a Python/Rust port implements on the host side.
+
+## Inputs (what the container is given)
+
+**Mounts and paths**, exposed as environment variables:
+
+| Env var | Path inside container | Mode | Contents |
+|---|---|---|---|
+| `AGENT_INPUT_DIR` | `/railyard/input` | read-only | the invocation input directory |
+| `AGENT_INPUT_FILE` | `/railyard/input/signal.json` | read-only | the full matched **signal envelope** (envelope + payload) |
+| `AGENT_PROMPT_FILE` | `/railyard/input/prompt.md` | read-only | the rendered prompt — **set only if the agent has a `prompt.md`** |
+| `AGENT_OUTPUT_DIR` | `/railyard/output` | writable | where the agent writes `result.json` |
+| `AGENT_EVENTS_FILE` | `/railyard/events.jsonl` | writable (append) | the backchannel (below) |
+
+Always read paths from the env vars, not hard-coded literals — they are the contract, the
+literal paths are an implementation detail.
+
+**Secrets**: each secret **named in the manifest** is injected as an environment variable
+of that name, resolved per container at spawn. Nothing else is injected — least privilege
+by construction. The reserved env var names above may not be used as secret names.
+
+**Guarantees to the agent:** a **fresh container every invocation** — statelessness is
+contractual, so persistence is the agent's job via its outputs — and **teardown always
+happens** when the run is finalized (on success, failure, timeout, or cancel), with logs
+captured before removal. An orchestrator restart is invisible from inside the container:
+supervision may be handed from one orchestrator process to the next while the container
+runs (see [lifecycle & recovery](./lifecycle-and-recovery.md)); the mounts, env vars,
+deadline, and events file are exactly as they were.
+
+## Outputs (what the container must produce)
+
+- **`result.json`** in `$AGENT_OUTPUT_DIR` — **any JSON value**. The framework wraps it in
+  the run record and **never interprets it** (no cross-provider result schema, ever —
+  SPEC §14). Absent or unparsable `result.json` is not itself a failure; it is recorded
+  with a `resultError`.
+- **Process exit code** determines success vs. failure: `0` succeeds, non-zero fails. This
+  is the source of truth, not the contents of `result.json`.
+
+## The events file (the only backchannel)
+
+`$AGENT_EVENTS_FILE` is an **append-only JSONL** file the orchestrator **tails during the
+run**, so agent-emitted signals dispatch while the agent is still running. It is the
+*only* backchannel — no HTTP callback, no sockets (SPEC invariant 6). Two line kinds:
+
+```json
+{ "kind": "signal", "type": "review.completed", "payload": { "issue": 42 } }
+{ "kind": "log", "level": "info", "message": "starting review" }
+```
+
+. The signal's id is derived from
+  the run id and the line's position in the file, so the same line is never routed twice
+  even if the orchestrator restarts while reading it.
 - A **`log`** line is captured into the run record; `level` defaults to `info`.
 - It is writable from any language: `echo '{"kind":"log","message":"hi"}' >> "$AGENT_EVENTS_FILE"`.
 
@@ -104,11 +166,18 @@ own emission does **not** re-trigger it unless its manifest sets `allowSelfTrigg
 
 ## Lifecycle & safeguards (framework guarantees, never silently absent)
 
-- **Concurrency cap** — per-agent, default 1; excess matched signals queue in memory.
+- **Concurrency cap** — per-agent, default 1; excess matched signals queue durably and
+  survive restarts.
 - **Hard timeout** — framework-enforced kill; default 900 s; `timeout: null` opts into an
-  indefinite run. The kill reason is recorded.
-- **Guaranteed teardown** — container and resources removed on any outcome; logs captured
-  first.
+  indefinite run. The deadline is absolute from container start and enforced by a
+  detached watchdog process even while no orchestrator is running. The kill reason is
+  recorded.
+- **Guaranteed teardown** — container and resources removed when the run is finalized, on
+  any outcome; logs captured first. A detached orchestrator restart is not an outcome —
+  the next orchestrator finalizes the run.
+- **Restart recovery** — a run's launch intent is persisted before its container exists;
+  the next orchestrator over the same runs directory reattaches, finalizes, or records it
+  interrupted, exactly once. See [lifecycle & recovery](./lifecycle-and-recovery.md).
 - **Network** — on by default (agents call provider APIs); `network: none` cuts it off.
   There is no egress allowlisting (a stated v1 non-goal) — the sandbox is exactly as tight
   as documented, no tighter.
@@ -121,10 +190,13 @@ own emission does **not** re-trigger it unless its manifest sets `allowSelfTrigg
 Under `runs/<ts>--<agent>--<id>/` (SPEC §12):
 
 ```
+lifecycle.json    # durable launch intent + phase machine (never holds secret values)
 invocation.json   # the signal envelope (incl. provenance), matched agent, resolved params, image hash
 agent.log         # captured stdout/stderr, secrets redacted
 events.jsonl      # the events file, preserved
-output/result.json  # your result.json + the framework's exit/timing/kill metadata around it
+result.json       # the framework's run record: exit code, timing, kill reason, your result.json parsed
+output/result.json  # your result.json, as written (redacted after the run)
+watchdog-kill.json  # only if the deadline watchdog killed the container while unsupervised
 ```
 
 Secret **values never appear** in signals, run records, journals, or captured logs
@@ -147,7 +219,8 @@ sharing a `runsDir` destroy each other's work:
   deleting the bind-mounted events file and output directory out from under a live
   container.
 - **The boot-time orphan sweep** force-removes every container labeled with that runs
-  root. A second orchestrator starting up kills the first one's running agents.
+  root that has no lifecycle record. A second orchestrator starting up would also
+  *recover* the first one's runs — supervising them out from under it.
 
 Sharing a `stateDir` is quieter but just as wrong: **monitor cursors** are loaded once and
 cached in memory, so concurrent owners overwrite each other's progress and the monitor
@@ -163,6 +236,6 @@ it. If you are certain no orchestrator is running and a stale lock is blocking b
 crash on a different host, or a corrupt lock file, neither of which can be
 liveness-checked), delete `.railyard.lock` by hand.
 
-Related: [authoring agents](./authoring-agents.md), [signal
-envelope](./contracts/signal-envelope.md), [prompt template
-grammar](./contracts/prompt-template-grammar.md).
+Related: [authoring agents](./authoring-agents.md), [lifecycle &
+recovery](./lifecycle-and-recovery.md), [signal envelope](./contracts/signal-envelope.md),
+[prompt template grammar](./contracts/prompt-template-grammar.md).

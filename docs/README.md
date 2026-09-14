@@ -13,6 +13,9 @@ and its future ports must honor.
   reference, `prompt.md`, image sources, non-root best practice.
 - **[Container contract](./container-contract.md)** — exactly what a container is given
   and must produce; the events-file backchannel and lifecycle safeguards.
+- **[Lifecycle & recovery](./lifecycle-and-recovery.md)** — shutdown modes (drain /
+  detach / cancel), what survives an orchestrator restart, duplicate suppression by work
+  identity, deadlines during downtime, and the deploy recipe.
 - **[Credential scoping](./credential-scoping.md)** — least-privilege secrets, the
   redaction guarantee, the accepted residual risk, and how to scope tokens.
 
